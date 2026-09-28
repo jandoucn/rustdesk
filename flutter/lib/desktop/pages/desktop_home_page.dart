@@ -59,13 +59,19 @@ class _DesktopHomePageState extends State<DesktopHomePage>
   Widget build(BuildContext context) {
     super.build(context);
     final isIncomingOnly = bind.isIncomingOnly();
+    final isSosMode = bind.mainGetBuildinOption(key: 'sos-mode') == 'Y';
     return _buildBlock(
         child: Row(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        buildLeftPane(context),
-        if (!isIncomingOnly) const VerticalDivider(width: 1),
-        if (!isIncomingOnly) Expanded(child: buildRightPane(context)),
+isSosMode
+          ? SizedBox(
+              width: 380,
+              child: buildLeftPane(context),
+            )
+          : buildLeftPane(context),
+        if (!isIncomingOnly && !isSosMode) const VerticalDivider(width: 1),
+        if (!isIncomingOnly && !isSosMode) Expanded(child: buildRightPane(context)),
       ],
     ));
   }
@@ -77,6 +83,7 @@ class _DesktopHomePageState extends State<DesktopHomePage>
 
   Widget buildLeftPane(BuildContext context) {
     final isIncomingOnly = bind.isIncomingOnly();
+    final isSosMode = bind.mainGetBuildinOption(key: 'sos-mode') == 'Y';
     final isOutgoingOnly = bind.isOutgoingOnly();
     final children = <Widget>[
       if (!isOutgoingOnly) buildPresetPasswordWarning(),
@@ -97,7 +104,7 @@ class _DesktopHomePageState extends State<DesktopHomePage>
             Obx(() => buildHelpCards(stateGlobal.updateUrl.value))),
         builder: (_, data) {
           if (data.hasData) {
-            if (isIncomingOnly) {
+            if (isIncomingOnly || isSosMode) {
               if (isInHomePage()) {
                 Future.delayed(Duration(milliseconds: 300), () {
                   _updateWindowSize();
@@ -111,7 +118,7 @@ class _DesktopHomePageState extends State<DesktopHomePage>
         },
       ),
     ];
-    if (isIncomingOnly) {
+    if (isIncomingOnly || isSosMode) {
       children.addAll([
         Divider(),
         OnlineStatusWidget(
@@ -187,6 +194,7 @@ class _DesktopHomePageState extends State<DesktopHomePage>
 
   buildIDBoard(BuildContext context) {
     final model = gFFI.serverModel;
+    final isSosMode = bind.mainGetBuildinOption(key: 'sos-mode') == 'Y';
     return Container(
       margin: const EdgeInsets.only(left: 20, right: 11),
       height: 57,
@@ -220,7 +228,7 @@ class _DesktopHomePageState extends State<DesktopHomePage>
                                   ?.color
                                   ?.withOpacity(0.5)),
                         ).marginOnly(top: 5),
-                        buildPopupMenu(context)
+                        isSosMode ? const Offstage() : buildPopupMenu(context)
                       ],
                     ),
                   ),
@@ -388,6 +396,7 @@ class _DesktopHomePageState extends State<DesktopHomePage>
 
   buildTip(BuildContext context) {
     final isOutgoingOnly = bind.isOutgoingOnly();
+    final isSosMode = bind.mainGetBuildinOption(key: 'sos-mode') == 'Y';
     return Padding(
       padding:
           const EdgeInsets.only(left: 20.0, right: 16, top: 16.0, bottom: 5),
@@ -401,7 +410,7 @@ class _DesktopHomePageState extends State<DesktopHomePage>
                 Align(
                   alignment: Alignment.centerLeft,
                   child: Text(
-                    translate("Your Desktop"),
+                    isSosMode ? (translate("Your Desktop") + " SOS\u7248") : translate("Your Desktop"),
                     style: Theme.of(context).textTheme.titleLarge,
                   ),
                 ),
