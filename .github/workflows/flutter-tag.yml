@@ -23,5 +23,5 @@ jobs:
     secrets: inherit
     with:
       upload-artifact: true
-      upload-tag: ${{ github.ref_name }}
+      upload-tag: ${{ github.event_name == 'workflow_dispatch' && '1.5.0' || github.ref_name }}
       edition: ${{ inputs.edition || 'sos' }}

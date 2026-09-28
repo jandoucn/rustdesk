@@ -922,6 +922,14 @@ jobs:
           fi
           ./build.py --flutter --hwcodec --unix-file-copy-paste ${{ matrix.job.extra-build-args }}
 
+      - name: Ad-hoc sign macOS app
+        if: env.MACOS_P12_BASE64 == null || env.MACOS_P12_BASE64 == ''
+        run: |
+          bash ./.github/scripts/sign-macos-app.sh \
+            ./flutter/build/macos/Build/Products/Release/RustDesk.app \
+            - \
+            ./flutter/macos/Runner/Release.entitlements
+
       - name: create unsigned dmg
         if: env.UPLOAD_ARTIFACT == 'true'
         run: |
