@@ -241,6 +241,10 @@ class UserModel {
     final url = await bind.mainGetApiServer();
     if (url.trim().isEmpty) return [];
     final resp = await http.get(Uri.parse('$url/api/login-options'));
+    final body = decode_http_response(resp).trim();
+    if (body.isEmpty || (!body.startsWith('[') && !body.startsWith('{'))) {
+      return [];
+    }
     const successStatusCodeStart = 200;
     const successStatusCodeEnd = 300;
     if (resp.statusCode < successStatusCodeStart ||

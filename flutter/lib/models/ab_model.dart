@@ -236,8 +236,8 @@ class AbModel {
       _setEmptyBody(headers);
       final resp = await http.post(Uri.parse(api), headers: headers);
       statusCode = resp.statusCode;
-      if (statusCode == 404) {
-        debugPrint("HTTP 404, api server doesn't support shared address book");
+      if (statusCode == 404 || decode_http_response(resp).trim().isEmpty) {
+        debugPrint("HTTP $statusCode, api server doesn't support shared address book");
         return false;
       }
       Map<String, dynamic> json =
@@ -268,8 +268,8 @@ class AbModel {
       _setEmptyBody(headers);
       final resp = await http.post(Uri.parse(api), headers: headers);
       statusCode = resp.statusCode;
-      if (statusCode == 404) {
-        debugPrint("HTTP 404, current api server is legacy mode");
+      if (statusCode == 404 || decode_http_response(resp).trim().isEmpty) {
+        debugPrint("HTTP $statusCode, current api server is legacy mode");
         // Old server: keep `_personalAbGuid` null and continue in legacy mode.
         return true;
       }
@@ -317,9 +317,9 @@ class AbModel {
         _setEmptyBody(headers);
         final resp = await http.post(uri, headers: headers);
         statusCode = resp.statusCode;
-        if (statusCode == 404) {
+        if (statusCode == 404 || decode_http_response(resp).trim().isEmpty) {
           debugPrint(
-              "HTTP 404, api server doesn't support shared address book");
+              "HTTP $statusCode, api server doesn't support shared address book");
           return false;
         }
         Map<String, dynamic> json =
