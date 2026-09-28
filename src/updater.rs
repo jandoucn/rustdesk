@@ -499,7 +499,7 @@ pub fn start_auto_update_macos() {
             log::info!("[root-update] Auto-update scheduler thread started.");
             std::thread::sleep(INITIAL_CHECK_DELAY);
             wait_for_failed_update_retry();
-            let mut interval = DUR_ONE_DAY;
+            let interval;
             loop {
                 log::info!("[root-update] Running scheduled update check...");
                 let no_active_conns = has_no_active_conns_ipc();

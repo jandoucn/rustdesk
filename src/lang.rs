@@ -33,7 +33,9 @@ mod lv;
 mod nb;
 mod nl;
 mod pl;
+#[allow(non_snake_case)]
 mod pt_BR;
+#[allow(non_snake_case)]
 mod pt_PT;
 mod ro;
 mod ru;

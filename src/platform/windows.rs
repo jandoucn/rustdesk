@@ -3245,7 +3245,7 @@ impl Drop for WakeLock {
 // Returns `false` if another tray process is already running in this session.
 pub fn try_lock_tray_single_instance() -> bool {
     use winapi::um::{
-        errhandlingapi::{GetLastError, SetLastError},
+        errhandlingapi::SetLastError,
         synchapi::CreateMutexW,
     };
     // `Local\` is the per session namespace, so the name is scoped to this
@@ -4193,7 +4193,6 @@ pub fn try_kill_rustdesk_main_window_process() -> ResultType<()> {
     // We can find the exact process which occupies the ipc, see more from https://github.com/winsiderss/systeminformer
     let app_name = crate::get_app_name().to_lowercase();
     log::info!("try kill main window process");
-    use hbb_common::sysinfo::System;
     let mut sys = System::new();
     sys.refresh_processes();
     let my_uid = sys

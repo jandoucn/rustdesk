@@ -843,7 +843,7 @@ pub fn run_terminal_helper(args: &[String]) -> Result<()> {
     );
 
     // Open named pipes (created by the service)
-    let mut input_pipe = open_pipe(input_pipe_name, true)?;
+    let input_pipe = open_pipe(input_pipe_name, true)?;
     let mut output_pipe = open_pipe(output_pipe_name, false)?;
 
     // Create ConPTY and shell

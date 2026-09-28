@@ -9,6 +9,9 @@ on:
       upload-tag:
         type: string
         default: "nightly"
+      edition:
+        type: string
+        default: "sos"
 
 # NOTE: F-Droid builder script 'flutter/build_fdroid.sh' reads environment
 # variables from this workflow!
@@ -46,6 +49,7 @@ env:
   VCPKG_CMAKE_VERSION: "4.3.0"
   ARMV7_VCPKG_COMMIT_ID: "6f29f12e82a8293156836ad81cc9bf5af41fe836" # 2025.01.13, got "/opt/artifacts/vcpkg/vcpkg: No such file or directory" with latest version
   VERSION: "1.5.0"
+  RUSTDESK_SOS: ${{ inputs.edition == 'sos' && '1' || '' }}
   NDK_VERSION: "r28c"
   #signing keys env variable checks
   ANDROID_SIGNING_KEY: "${{ secrets.ANDROID_SIGNING_KEY }}"
@@ -55,6 +59,7 @@ env:
 
 jobs:
   generate-sbom:
+    if: false
     runs-on: ubuntu-latest
 
     permissions:
@@ -1178,6 +1183,7 @@ jobs:
         env:
           ANDROID_NDK_HOME: ${{ steps.setup-ndk.outputs.ndk-path }}
           ANDROID_NDK_ROOT: ${{ steps.setup-ndk.outputs.ndk-path }}
+          RUSTDESK_SOS: ${{ env.RUSTDESK_SOS }}
         run: |
           rustup target add ${{ matrix.job.target }}
           cargo install cargo-ndk --version ${{ env.CARGO_NDK_VERSION }} --locked

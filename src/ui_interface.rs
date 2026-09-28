@@ -1063,6 +1063,7 @@ pub enum DeployResult {
 }
 
 impl DeployResult {
+    #[cfg_attr(not(target_os = "android"), allow(dead_code))]
     pub fn message(&self) -> String {
         match self {
             Self::Ok => "".to_owned(),

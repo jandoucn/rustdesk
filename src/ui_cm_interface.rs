@@ -20,7 +20,7 @@ use hbb_common::tokio::sync::mpsc::unbounded_channel;
 #[cfg(target_os = "windows")]
 use hbb_common::tokio::sync::Mutex as TokioMutex;
 use hbb_common::{
-    allow_err, bail,
+    allow_err,
     config::{option2bool, Config},
     log,
     protobuf::Message as _,

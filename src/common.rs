@@ -37,7 +37,7 @@ use hbb_common::{
 
 use crate::{
     hbbs_http::{create_http_client_async, get_url_for_tls},
-    ui_interface::{get_api_server as ui_get_api_server, get_option, is_installed, set_option},
+    ui_interface::{get_api_server as ui_get_api_server, get_option, set_option},
 };
 
 #[derive(Debug, Eq, PartialEq)]
@@ -2159,8 +2159,11 @@ async fn key_exchange(conn: &mut Stream, key: &str, log_on_success: bool) -> Res
     let Some(rs_pk) = rs_pk else {
         bail!("Handshake failed: invalid public key from rendezvous server");
     };
-    match timeout(READ_TIMEOUT, conn.next()).await? {
-        Some(Ok(bytes)) => {
+    // hbbs 1.1.16 never speaks first. A long wait here is the
+    // "Failed to secure tcp: deadline has elapsed" failure. A server that
+    // does the exchange sends it immediately, so a short probe is enough.
+    match timeout(3_000, conn.next()).await {
+        Ok(Some(Ok(bytes))) => {
             if let Ok(msg_in) = RendezvousMessage::parse_from_bytes(&bytes) {
                 match msg_in.union {
                     Some(rendezvous_message::Union::KeyExchange(ex)) => {
@@ -2218,7 +2221,8 @@ async fn key_exchange(conn: &mut Stream, key: &str, log_on_success: bool) -> Res
                 }
             }
         }
-        _ => {}
+        Ok(_) => {}
+        Err(_) => {}
     }
     Ok(false)
 }
@@ -2382,15 +2386,12 @@ pub fn load_custom_client() {
                 .entry("allow-hide-cm".to_string())
                 .or_insert("Y".to_string());
         }
-        // Enable SOS mode - simplified UI
-        {
-            let mut buildin = config::BUILTIN_SETTINGS.write().unwrap();
-            buildin.insert("sos-mode".to_string(), "Y".to_string());
-        }
+        apply_edition_defaults();
         return;
     }
     let Some(path) = std::env::current_exe().map_or(None, |x| x.parent().map(|x| x.to_path_buf()))
     else {
+        apply_edition_defaults();
         return;
     };
     #[cfg(target_os = "macos")]
@@ -2399,6 +2400,7 @@ pub fn load_custom_client() {
     if path.is_file() {
         let Ok(data) = std::fs::read_to_string(&path) else {
             log::error!("Failed to read custom client config");
+            apply_edition_defaults();
             return;
         };
         read_custom_client(&data.trim());
@@ -2425,11 +2427,15 @@ pub fn load_custom_client() {
             .entry("allow-hide-cm".to_string())
             .or_insert("Y".to_string());
     }
-    // Enable SOS mode - simplified UI
-    {
-        let mut buildin = config::BUILTIN_SETTINGS.write().unwrap();
-        buildin.insert("sos-mode".to_string(), "Y".to_string());
+    apply_edition_defaults();
+}
+
+fn apply_edition_defaults() {
+    if option_env!("RUSTDESK_SOS") != Some("1") {
+        return;
     }
+    let mut buildin = config::BUILTIN_SETTINGS.write().unwrap();
+    buildin.insert("sos-mode".to_string(), "Y".to_string());
 }
 
 fn read_custom_client_advanced_settings(
@@ -2965,6 +2971,7 @@ pub fn get_control_permission(
     permissions: u64,
     permission: hbb_common::rendezvous_proto::control_permissions::Permission,
 ) -> Option<bool> {
+    #[allow(unused_imports)]
     use hbb_common::protobuf::Enum;
     let index = permission.value();
     if index >= 0 && index < 32 {
