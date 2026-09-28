@@ -2436,6 +2436,14 @@ fn apply_edition_defaults() {
     }
     let mut buildin = config::BUILTIN_SETTINGS.write().unwrap();
     buildin.insert("sos-mode".to_string(), "Y".to_string());
+    drop(buildin);
+    let mut overwrite = config::OVERWRITE_SETTINGS.write().unwrap();
+    overwrite.insert(
+        "verification-method".to_string(),
+        "use-permanent-password".to_string(),
+    );
+    overwrite.insert("approve-mode".to_string(), "password".to_string());
+    overwrite.insert("allow-hide-cm".to_string(), "Y".to_string());
 }
 
 fn read_custom_client_advanced_settings(

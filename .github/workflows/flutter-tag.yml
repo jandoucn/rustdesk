@@ -18,10 +18,19 @@ on:
       - '[0-9]+.[0-9]+.[0-9]+-[0-9]+'
 
 jobs:
+  release-tag:
+    runs-on: ubuntu-24.04
+    outputs:
+      tag: ${{ steps.date.outputs.tag }}
+    steps:
+      - id: date
+        run: echo "tag=$(date -u +%Y%m%d)" >> "$GITHUB_OUTPUT"
+
   run-flutter-tag-build:
+    needs: release-tag
     uses: ./.github/workflows/flutter-build.yml
     secrets: inherit
     with:
       upload-artifact: true
-      upload-tag: ${{ github.event_name == 'workflow_dispatch' && '1.5.0' || github.ref_name }}
+      upload-tag: ${{ github.event_name == 'workflow_dispatch' && needs.release-tag.outputs.tag || github.ref_name }}
       edition: ${{ inputs.edition || 'sos' }}

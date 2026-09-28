@@ -109,6 +109,12 @@ fn make_tray() -> hbb_common::ResultType<()> {
             crate::run_me::<&str>(vec![]).ok();
             return;
         }
+        let sos = crate::ui_interface::get_builtin_option("sos-mode") == "Y";
+        #[cfg(target_os = "macos")]
+        if sos {
+            crate::run_me::<&str>(vec!["--open-window"]).ok();
+            return;
+        }
         #[cfg(target_os = "macos")]
         crate::platform::macos::handle_application_should_open_untitled_file();
         #[cfg(target_os = "windows")]
@@ -117,13 +123,18 @@ fn make_tray() -> hbb_common::ResultType<()> {
             // dialog, I found on one user's desktop, but no idea why, Windows is shit.
             // Use `run_me` instead.
             // `allow_multiple_instances` in `flutter/windows/runner/main.cpp` allows only one instance without args.
-            crate::run_me::<&str>(vec![]).ok();
+            if sos {
+                crate::run_me::<&str>(vec!["--open-window"]).ok();
+            } else {
+                crate::run_me::<&str>(vec![]).ok();
+            }
         }
         #[cfg(target_os = "linux")]
         {
             // Do not use "xdg-open", it won't read the config.
             if crate::dbus::invoke_new_connection(crate::get_uri_prefix()).is_err() {
-                if let Ok(task) = crate::run_me::<&str>(vec![]) {
+                let args: Vec<&str> = if sos { vec!["--open-window"] } else { vec![] };
+                if let Ok(task) = crate::run_me::<&str>(args) {
                     crate::server::CHILD_PROCESS.lock().unwrap().push(task);
                 }
             }
