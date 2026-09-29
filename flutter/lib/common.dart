@@ -2713,7 +2713,7 @@ connect(BuildContext context, String id,
         Navigator.push(
           context,
           MaterialPageRoute(
-            builder: (BuildContext context) => RemotePage(
+            builder: (BuildContext context) => desktop_remote.RemotePage(
                 id: id,
                 password: password,
                 isSharedPassword: isSharedPassword,
