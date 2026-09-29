@@ -2713,13 +2713,11 @@ connect(BuildContext context, String id,
         Navigator.push(
           context,
           MaterialPageRoute(
-            builder: (BuildContext context) => desktop_remote.RemotePage(
+            builder: (BuildContext context) => RemotePage(
                 id: id,
-                toolbarState: ToolbarState(),
                 password: password,
                 isSharedPassword: isSharedPassword,
-                forceRelay: forceRelay,
-                isViewOnly: isViewOnly),
+                forceRelay: forceRelay),
           ),
         );
       }
