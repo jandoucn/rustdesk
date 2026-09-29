@@ -11,6 +11,17 @@ on:
         description: 构建 SOS 版
         type: boolean
         default: true
+      platforms:
+        description: 构建平台，android 只出手机包
+        type: choice
+        options:
+          - all
+          - android
+        default: all
+      tag:
+        description: 追加到已有版本号，留空则新建
+        type: string
+        default: ""
 
 jobs:
   release-tag:
@@ -52,5 +63,6 @@ jobs:
     secrets: inherit
     with:
       upload-artifact: true
-      upload-tag: ${{ needs.release-tag.outputs.tag }}
+      upload-tag: ${{ inputs.tag != '' && inputs.tag || needs.release-tag.outputs.tag }}
       edition: ${{ matrix.edition }}
+      platforms: ${{ inputs.platforms }}
