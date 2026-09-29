@@ -46,13 +46,15 @@ class RemotePage extends StatefulWidget {
       required this.id,
       this.password,
       this.isSharedPassword,
-      this.forceRelay})
+      this.forceRelay,
+      this.isViewOnly})
       : super(key: key);
 
   final String id;
   final String? password;
   final bool? isSharedPassword;
   final bool? forceRelay;
+  final bool? isViewOnly;
 
   @override
   State<RemotePage> createState() => _RemotePageState(id);
@@ -100,6 +102,27 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
       isSharedPassword: widget.isSharedPassword,
       forceRelay: widget.forceRelay,
     );
+    if (widget.isViewOnly == true) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!bind.sessionGetToggleOptionSync(
+            sessionId: sessionId, arg: kOptionToggleViewOnly)) {
+          bind.sessionToggleOption(
+              sessionId: sessionId, value: kOptionToggleViewOnly);
+        }
+        if (!bind.sessionGetToggleOptionSync(
+            sessionId: sessionId, arg: 'show-remote-cursor')) {
+          bind.sessionToggleOption(
+              sessionId: sessionId, value: 'show-remote-cursor');
+        }
+        gFFI.ffiModel.setViewOnly(
+            widget.id,
+            bind.sessionGetToggleOptionSync(
+                sessionId: sessionId, arg: kOptionToggleViewOnly));
+        ShowRemoteCursorState.find(widget.id).value =
+            bind.sessionGetToggleOptionSync(
+                sessionId: sessionId, arg: 'show-remote-cursor');
+      });
+    }
     WidgetsBinding.instance.addPostFrameCallback((_) {
       SystemChrome.setEnabledSystemUIMode(SystemUiMode.manual, overlays: []);
       gFFI.dialogManager
