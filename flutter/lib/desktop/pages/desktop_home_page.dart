@@ -365,7 +365,8 @@ isSosMode
                           ),
                           onHover: (value) => refreshHover.value = value,
                         ).marginOnly(right: 8, top: 4),
-                      if (!bind.isDisableSettings())
+                      if (!bind.isDisableSettings() &&
+                          bind.mainGetBuildinOption(key: 'sos-mode') != 'Y')
                         InkWell(
                           child: Tooltip(
                             message: translate('Change Password'),
