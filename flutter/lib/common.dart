@@ -731,7 +731,7 @@ closeConnection({String? id}) {
 }
 
 Future<void> windowOnTop(int? id) async {
-  if (!isDesktop) {
+  if (!isDesktop || desktopType == DesktopType.cm) {
     return;
   }
   print("Bring window '$id' on top");
@@ -3120,7 +3120,7 @@ void onCopyId(String value) {
 
 Future<bool> callMainCheckSuperUserPermission() async {
   bool checked = await bind.mainCheckSuperUserPermission();
-  if (isMacOS) {
+  if (isMacOS && desktopType != DesktopType.cm) {
     await windowManager.show();
   }
   return checked;

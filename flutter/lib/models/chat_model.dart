@@ -290,32 +290,8 @@ class ChatModel with ChangeNotifier {
     await toggleCMSidePage();
   }
 
-  var _togglingCMSidePage = false; // protect order for await
   toggleCMSidePage() async {
-    if (_togglingCMSidePage) return false;
-    _togglingCMSidePage = true;
-    if (_isShowCMSidePage) {
-      _isShowCMSidePage = !_isShowCMSidePage;
-      notifyListeners();
-      await windowManager.show();
-      await windowManager.setSizeAlignment(
-          kConnectionManagerWindowSizeClosedChat, Alignment.topRight);
-    } else {
-      final currentSelectedTab =
-          gFFI.serverModel.tabController.state.value.selectedTabInfo;
-      final client = parent.target?.serverModel.clients.firstWhereOrNull(
-          (client) => client.id.toString() == currentSelectedTab.key);
-      if (client != null) {
-        client.unreadChatMessageCount.value = 0;
-      }
-      requestChatInputFocus();
-      await windowManager.show();
-      await windowManager.setSizeAlignment(
-          kConnectionManagerWindowSizeOpenChat, Alignment.topRight);
-      _isShowCMSidePage = !_isShowCMSidePage;
-      notifyListeners();
-    }
-    _togglingCMSidePage = false;
+    return false;
   }
 
   changeCurrentKey(MessageKey key) {

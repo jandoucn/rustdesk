@@ -379,6 +379,8 @@ function update() {
 }
 
 function bring_to_top(idx=-1) {
+    if (hide_cm == undefined) hide_cm = handler.hide_cm();
+    if (hide_cm) return;
     if (view.windowState == View.WINDOW_HIDDEN || view.windowState == View.WINDOW_MINIMIZED) {
         if (is_linux) {
             view.focus = self;

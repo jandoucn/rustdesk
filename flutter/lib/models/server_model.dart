@@ -131,6 +131,9 @@ class ServerModel with ChangeNotifier {
   WeakReference<FFI> parent;
 
   ServerModel(this.parent) {
+    if (desktopType == DesktopType.cm) {
+      hideCm = true;
+    }
     _emptyIdShow = translate("Generating ...");
     _serverId = IDTextEditingController(text: _emptyIdShow);
 
