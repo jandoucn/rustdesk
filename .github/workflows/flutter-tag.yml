@@ -1,14 +1,14 @@
-name: Flutter Tag Build
+name: 发布构建
 
 on:
   workflow_dispatch:
     inputs:
       standard:
-        description: Build standard
+        description: 构建标准版
         type: boolean
         default: true
       sos:
-        description: Build SOS
+        description: 构建 SOS 版
         type: boolean
         default: true
 

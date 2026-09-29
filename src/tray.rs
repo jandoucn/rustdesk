@@ -10,6 +10,29 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 #[cfg(windows)]
+fn windows_tray_dismissed_path() -> std::path::PathBuf {
+    hbb_common::config::Config::path("tray-dismissed")
+}
+
+#[cfg(windows)]
+pub fn windows_tray_dismissed() -> bool {
+    windows_tray_dismissed_path().is_file()
+}
+
+#[cfg(windows)]
+pub fn set_windows_tray_dismissed(dismissed: bool) {
+    let path = windows_tray_dismissed_path();
+    if dismissed {
+        if let Some(parent) = path.parent() {
+            allow_err!(std::fs::create_dir_all(parent));
+        }
+        allow_err!(std::fs::write(&path, b"1"));
+    } else if path.is_file() {
+        allow_err!(std::fs::remove_file(path));
+    }
+}
+
+#[cfg(windows)]
 fn close_windows_desktop_windows() {
     let app_exe_name = format!("{}.exe", crate::get_app_name());
     let current = std::process::id();
@@ -24,6 +47,10 @@ fn close_windows_desktop_windows() {
 }
 
 pub fn start_tray() {
+    #[cfg(windows)]
+    if windows_tray_dismissed() {
+        return;
+    }
     if crate::ui_interface::get_builtin_option(keys::OPTION_HIDE_TRAY) == "Y" {
         #[cfg(not(target_os = "macos"))]
         {
@@ -230,10 +257,7 @@ fn make_tray() -> hbb_common::ResultType<()> {
                         // Leave the Windows service running. Remember that the
                         // user dismissed the tray so a later connection does not
                         // bring the icon back. Opening the desktop app clears it.
-                        hbb_common::config::Config::set_option(
-                            "hide-tray".to_owned(),
-                            "Y".to_owned(),
-                        );
+                        set_windows_tray_dismissed(true);
                         close_windows_desktop_windows();
                         *control_flow = ControlFlow::Exit;
                     } else {
