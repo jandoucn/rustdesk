@@ -380,6 +380,10 @@ pub fn core_main() -> Option<Vec<String>> {
                 return None;
             }
         } else if args[0] == "--tray" {
+            #[cfg(windows)]
+            if crate::tray::windows_tray_dismissed() {
+                return None;
+            }
             if !crate::check_process("--tray", true) {
                 crate::tray::start_tray();
             }
