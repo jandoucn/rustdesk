@@ -1051,8 +1051,12 @@ fn is_private_inventory_ip(value: &str) -> bool {
                 && ip.is_private()
         }
         std::net::IpAddr::V6(ip) => {
-            !ip.is_loopback() && !ip.is_unspecified() && !ip.is_unicast_link_local()
-                && (ip.segments()[0] & 0xfe00) == 0xfc00
+            let first_segment = ip.segments()[0];
+            !ip.is_loopback()
+                && !ip.is_unspecified()
+                // Rust 1.81 does not expose Ipv6Addr::is_unicast_link_local.
+                && (first_segment & 0xffc0) != 0xfe80
+                && (first_segment & 0xfe00) == 0xfc00
         }
     }
 }
