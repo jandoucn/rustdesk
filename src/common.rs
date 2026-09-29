@@ -2440,7 +2440,7 @@ fn apply_edition_defaults() {
     let mut overwrite = config::OVERWRITE_SETTINGS.write().unwrap();
     overwrite.insert(
         "verification-method".to_string(),
-        "use-permanent-password".to_string(),
+        "use-both-passwords".to_string(),
     );
     overwrite.insert("approve-mode".to_string(), "password".to_string());
     overwrite.insert("allow-hide-cm".to_string(), "Y".to_string());

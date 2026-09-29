@@ -20,11 +20,31 @@ on:
 jobs:
   release-tag:
     runs-on: ubuntu-24.04
+    permissions:
+      contents: read
     outputs:
       tag: ${{ steps.date.outputs.tag }}
     steps:
       - id: date
-        run: echo "tag=$(date -u +%Y%m%d)" >> "$GITHUB_OUTPUT"
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          day=$(date -u +%Y%m%d)
+          mapfile -t names < <(gh api --paginate "repos/${GITHUB_REPOSITORY}/git/matching-refs/tags/${day}" --jq '.[].ref | sub("refs/tags/"; "")')
+          max=0
+          for name in "${names[@]}"; do
+            [ -n "$name" ] || continue
+            if [[ "$name" =~ ^${day}-([0-9]+)$ ]]; then
+              n=$((10#${BASH_REMATCH[1]}))
+              if (( n > max )); then
+                max=$n
+              fi
+            fi
+          done
+          printf -v suffix '%02d' $((max + 1))
+          echo "tag=${day}-${suffix}" >> "$GITHUB_OUTPUT"
+          echo "Release tag: ${day}-${suffix}"
 
   run-flutter-tag-build:
     needs: release-tag
