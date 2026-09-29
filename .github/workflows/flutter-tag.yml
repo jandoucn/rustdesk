@@ -10,12 +10,6 @@ on:
           - standard
           - sos
         default: standard
-  push:
-    tags:
-      - 'v[0-9]+.[0-9]+.[0-9]+'
-      - '[0-9]+.[0-9]+.[0-9]+'
-      - 'v[0-9]+.[0-9]+.[0-9]+-[0-9]+'
-      - '[0-9]+.[0-9]+.[0-9]+-[0-9]+'
 
 jobs:
   release-tag:
@@ -52,5 +46,5 @@ jobs:
     secrets: inherit
     with:
       upload-artifact: true
-      upload-tag: ${{ github.event_name == 'workflow_dispatch' && needs.release-tag.outputs.tag || github.ref_name }}
+      upload-tag: ${{ needs.release-tag.outputs.tag }}
       edition: ${{ inputs.edition || 'sos' }}
