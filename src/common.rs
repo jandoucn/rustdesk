@@ -969,6 +969,7 @@ pub fn get_sysinfo() -> serde_json::Value {
         "os": os,
         "hostname": hostname,
     });
+    add_runtime_inventory_fields(&mut out);
     #[cfg(not(any(target_os = "android", target_os = "ios")))]
     {
         let username = crate::platform::get_active_username();
@@ -977,6 +978,83 @@ pub fn get_sysinfo() -> serde_json::Value {
         }
     }
     out
+}
+
+/// Add stable client inventory metadata to the existing sysinfo payload.
+///
+/// These fields are deliberately additive so older hbbs-compatible servers can
+/// continue to accept the payload while newer management consoles can display
+/// the actual build/runtime shape of a client.
+fn add_runtime_inventory_fields(out: &mut serde_json::Value) {
+    let platform = if cfg!(target_os = "windows") {
+        PLATFORM_WINDOWS
+    } else if cfg!(target_os = "macos") {
+        PLATFORM_MACOS
+    } else if cfg!(target_os = "android") {
+        PLATFORM_ANDROID
+    } else if cfg!(target_os = "ios") {
+        "iOS"
+    } else if cfg!(target_os = "linux") {
+        PLATFORM_LINUX
+    } else {
+        "Other"
+    };
+    let distribution = if cfg!(any(target_os = "android", target_os = "ios")) {
+        "mobile"
+    } else if option_env!("RUSTDESK_SOS") == Some("1") {
+        "sos"
+    } else {
+        "desktop"
+    };
+    let install_mode = if std::env::var(PORTABLE_APPNAME_RUNTIME_ENV_KEY).is_ok() {
+        "portable"
+    } else {
+        "installed"
+    };
+    let executable_name = std::env::current_exe()
+        .ok()
+        .and_then(|path| path.file_name().map(|name| name.to_string_lossy().into_owned()))
+        .filter(|name| !name.is_empty())
+        .unwrap_or_else(get_app_name);
+    out["platform"] = json!(platform);
+    out["distribution"] = json!(distribution);
+    out["install_mode"] = json!(install_mode);
+    out["client_arch"] = json!(std::env::consts::ARCH);
+    out["executable_name"] = json!(executable_name);
+
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+    {
+        let private_ips = default_net::get_interfaces()
+            .into_iter()
+            .flat_map(|interface| {
+                interface
+                    .ipv4
+                    .into_iter()
+                    .map(|network| network.addr.to_string())
+                    .chain(interface.ipv6.into_iter().map(|network| network.addr.to_string()))
+            })
+            .filter(|ip| is_private_inventory_ip(ip))
+            .take(16)
+            .collect::<Vec<_>>();
+        out["network"] = json!({"private_ips": private_ips});
+    }
+}
+
+fn is_private_inventory_ip(value: &str) -> bool {
+    let Ok(ip) = value.parse::<std::net::IpAddr>() else {
+        return false;
+    };
+    match ip {
+        std::net::IpAddr::V4(ip) => {
+            !ip.is_loopback()
+                && !ip.is_link_local()
+                && ip.is_private()
+        }
+        std::net::IpAddr::V6(ip) => {
+            !ip.is_loopback() && !ip.is_unspecified() && !ip.is_unicast_link_local()
+                && (ip.segments()[0] & 0xfe00) == 0xfc00
+        }
+    }
 }
 
 #[inline]
@@ -3876,6 +3954,35 @@ mod tests {
         // `decode_id_pk` is the same blob minus the fingerprint, so the field is invisible to
         // non-WebRTC handshakes.
         assert_eq!(decode_id_pk(&signed, &pk).unwrap(), (id, their_pk));
+    }
+
+    #[test]
+    fn test_inventory_private_ip_filter_matches_api_contract() {
+        assert!(is_private_inventory_ip("10.0.0.8"));
+        assert!(is_private_inventory_ip("172.16.2.4"));
+        assert!(is_private_inventory_ip("192.168.1.20"));
+        assert!(is_private_inventory_ip("fd00::8"));
+        assert!(!is_private_inventory_ip("127.0.0.1"));
+        assert!(!is_private_inventory_ip("169.254.1.2"));
+        assert!(!is_private_inventory_ip("8.8.8.8"));
+        assert!(!is_private_inventory_ip("fe80::1"));
+    }
+
+    #[test]
+    fn test_inventory_metadata_is_additive_and_structured() {
+        let mut payload = json!({"hostname": "test"});
+        add_runtime_inventory_fields(&mut payload);
+        for key in [
+            "platform",
+            "distribution",
+            "install_mode",
+            "client_arch",
+            "executable_name",
+        ] {
+            assert!(payload[key].is_string(), "missing string field {key}");
+        }
+        assert!(payload["network"]["private_ips"].is_array());
+        assert_eq!(payload["hostname"], "test");
     }
 
     // The route probe is awaited on the connection path, so whatever it finds - an address, or
