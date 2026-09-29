@@ -94,7 +94,8 @@ jobs:
             rustdesk.sbom.json
 
   publish-release-notes:
-    if: inputs.upload-artifact
+    # standard 负责创建共享 Release；SOS 只上传自己的资产，避免两个 edition 并发创建同一 Release。
+    if: inputs.upload-artifact && inputs.edition == 'standard'
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
