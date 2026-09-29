@@ -25,5 +25,5 @@
 - 手动构建的 Release 标签按 UTC 日期加两位序号，例如 `20260929-01`。同一天再次构建会变成 `20260929-02`。
 - 安装包文件名带版本类型，`sos` 或 `standard`。
 - 当前只构建 Windows x64、macOS ARM 和 Android arm64。
-- macOS 安装包使用 ad-hoc 签名，不启用 hardened runtime。
+- 没有 Apple 证书时，macOS 安装包保持 Xcode 的普通 ad-hoc 签名，不启用 hardened runtime。下载后执行 `xattr -cr` 即可打开。有证书时仍走 Developer ID 和公证。
 - 登录和地址簿兼容旧版 rustdesk-api。

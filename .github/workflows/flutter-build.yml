@@ -922,13 +922,22 @@ jobs:
           fi
           ./build.py --flutter --hwcodec --unix-file-copy-paste ${{ matrix.job.extra-build-args }}
 
-      - name: Ad-hoc sign macOS app
+      - name: Sign copied service without hardened runtime
         if: env.MACOS_P12_BASE64 == null || env.MACOS_P12_BASE64 == ''
         run: |
-          bash ./.github/scripts/sign-macos-app.sh \
-            ./flutter/build/macos/Build/Products/Release/RustDesk.app \
-            - \
-            ./flutter/macos/Runner/Release.entitlements
+          # Xcode already ad-hoc signed the app with hardened runtime off.
+          # Re-signing the whole bundle with hardened runtime makes Gatekeeper
+          # reject it after xattr -cr. Only the copied service binary is unsigned.
+          codesign --force --sign - \
+            ./flutter/build/macos/Build/Products/Release/RustDesk.app/Contents/MacOS/service
+          codesign --verify --deep --strict --verbose=2 \
+            ./flutter/build/macos/Build/Products/Release/RustDesk.app
+          flags=$(codesign -d --verbose=4 \
+            ./flutter/build/macos/Build/Products/Release/RustDesk.app 2>&1 \
+            | awk -F= '/^CodeDirectory /{print $0}')
+          case "$flags" in
+            *flags=0x10000*|*runtime*) echo "unsigned macOS app must not use hardened runtime" >&2; exit 1 ;;
+          esac
 
       - name: create unsigned dmg
         if: env.UPLOAD_ARTIFACT == 'true'
