@@ -158,9 +158,7 @@ void runMainApp(bool startService) async {
     // Check the startup argument, if we successfully handle the argument, we keep the main window hidden.
     final handledByUniLinks = await initUniLinks();
     debugPrint("handled by uni links: $handledByUniLinks");
-    final sosSilent = bind.mainGetBuildinOption(key: "sos-mode") == 'Y' &&
-        !kBootArgs.contains('--open-window');
-    if (handledByUniLinks || handleUriLink(cmdArgs: kBootArgs) || sosSilent) {
+    if (handledByUniLinks || handleUriLink(cmdArgs: kBootArgs)) {
       windowManager.hide();
     } else {
       windowManager.show();
