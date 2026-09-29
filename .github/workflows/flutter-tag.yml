@@ -3,13 +3,14 @@ name: Flutter Tag Build
 on:
   workflow_dispatch:
     inputs:
-      edition:
-        description: Build edition
-        type: choice
-        options:
-          - standard
-          - sos
-        default: standard
+      standard:
+        description: Build standard
+        type: boolean
+        default: true
+      sos:
+        description: Build SOS
+        type: boolean
+        default: true
 
 jobs:
   release-tag:
@@ -42,9 +43,14 @@ jobs:
 
   run-flutter-tag-build:
     needs: release-tag
+    if: inputs.standard || inputs.sos
+    strategy:
+      fail-fast: false
+      matrix:
+        edition: ${{ fromJson(format('[{0}{1}{2}]', inputs.standard && '"standard"' || '', inputs.standard && inputs.sos && ',' || '', inputs.sos && '"sos"' || '')) }}
     uses: ./.github/workflows/flutter-build.yml
     secrets: inherit
     with:
       upload-artifact: true
       upload-tag: ${{ needs.release-tag.outputs.tag }}
-      edition: ${{ inputs.edition || 'sos' }}
+      edition: ${{ matrix.edition }}
