@@ -377,8 +377,8 @@ void AddFirewallRuleCmdline(LPWSTR exeName, LPWSTR exeFile, LPCWSTR dir)
 
     hi = ShellExecuteW(NULL, L"open", L"netsh", cmdline, NULL, SW_HIDE);
     // https://learn.microsoft.com/en-us/windows/win32/api/shellapi/nf-shellapi-shellexecutew
-    if ((int)hi <= 32) {
-        WcaLog(LOGMSG_STANDARD, "Failed to change firewall rule : %d, last error: %d", (int)hi, GetLastError());
+    if ((int)(INT_PTR)hi <= 32) {
+        WcaLog(LOGMSG_STANDARD, "Failed to change firewall rule : %d, last error: %d", (int)(INT_PTR)hi, GetLastError());
     }
     else {
         WcaLog(LOGMSG_STANDARD, "Firewall rule \"%ls\" (%ls) is added", rulename, dir);
@@ -407,8 +407,8 @@ void RemoveFirewallRuleCmdline(LPWSTR exeName)
 
     hi = ShellExecuteW(NULL, L"open", L"netsh", cmdline, NULL, SW_HIDE);
     // https://learn.microsoft.com/en-us/windows/win32/api/shellapi/nf-shellapi-shellexecutew
-    if ((int)hi <= 32) {
-        WcaLog(LOGMSG_STANDARD, "Failed to change firewall rule \"%ls\" : %d, last error: %d", rulename, (int)hi, GetLastError());
+    if ((int)(INT_PTR)hi <= 32) {
+        WcaLog(LOGMSG_STANDARD, "Failed to change firewall rule \"%ls\" : %d, last error: %d", rulename, (int)(INT_PTR)hi, GetLastError());
     }
     else {
         WcaLog(LOGMSG_STANDARD, "Firewall rule \"%ls\" is removed", rulename);
@@ -737,8 +737,8 @@ UINT __stdcall AddRegSoftwareSASGeneration(__in MSIHANDLE hInstall)
 
     hi = ShellExecuteW(NULL, L"open", L"reg", L" add HKEY_LOCAL_MACHINE\\Software\\Microsoft\\Windows\\CurrentVersion\\Policies\\System /f /v SoftwareSASGeneration /t REG_DWORD /d 1", NULL, SW_HIDE);
     // https://learn.microsoft.com/en-us/windows/win32/api/shellapi/nf-shellapi-shellexecutew
-    if ((int)hi <= 32) {
-        WcaLog(LOGMSG_STANDARD, "Failed to add registry name \"%ls\", %d, %d", valueName, (int)hi, GetLastError());
+    if ((int)(INT_PTR)hi <= 32) {
+        WcaLog(LOGMSG_STANDARD, "Failed to add registry name \"%ls\", %d, %d", valueName, (int)(INT_PTR)hi, GetLastError());
     }
     else {
         WcaLog(LOGMSG_STANDARD, "Registry name \"%ls\" is added", valueName);
@@ -752,7 +752,7 @@ UINT __stdcall AddRegSoftwareSASGeneration(__in MSIHANDLE hInstall)
         goto LExit;
     }
 
-    result = RegSetValueExW(hKey, valueName, 0, valueType, reinterpret_cast<const BYTE*>(valueData), valueDataSize);
+    result = RegSetValueExW(hKey, valueName, 0, valueType, reinterpret_cast<const BYTE*>(&valueData), valueDataSize);
     if (result != ERROR_SUCCESS) {
         WcaLog(LOGMSG_STANDARD, "Failed to set registry value: %d", result);
         RegCloseKey(hKey);
@@ -824,8 +824,8 @@ UINT __stdcall RemoveAmyuniIdd(
     WcaLog(LOGMSG_STANDARD, "Remove amyuni idd %ls in %ls", exe, workDir);
     hi = ShellExecuteW(NULL, L"open", exe, L"remove usbmmidd", workDir, SW_HIDE);
     // https://learn.microsoft.com/en-us/windows/win32/api/shellapi/nf-shellapi-shellexecutew
-    if ((int)hi <= 32) {
-        WcaLog(LOGMSG_STANDARD, "Failed to remove amyuni idd : %d, last error: %d", (int)hi, GetLastError());
+    if ((int)(INT_PTR)hi <= 32) {
+        WcaLog(LOGMSG_STANDARD, "Failed to remove amyuni idd : %d, last error: %d", (int)(INT_PTR)hi, GetLastError());
     }
     else {
         WcaLog(LOGMSG_STANDARD, "Amyuni idd is removed");
@@ -867,7 +867,7 @@ void TryCreateStartServiceByShell(LPWSTR svcName, LPWSTR svcBinary, LPWSTR szSvc
         if (svcBinary[j] == L'"') {
             szNewBin[i] = L'\\';
             i += 1;
-            if (i >= cchNewBin) {
+            if ((DWORD)i >= cchNewBin) {
                 WcaLog(LOGMSG_STANDARD, "Failed to copy bin for service: %ls, buffer is not enough", svcName);
                 return;
             }
@@ -881,7 +881,7 @@ void TryCreateStartServiceByShell(LPWSTR svcName, LPWSTR svcBinary, LPWSTR szSvc
         }
         i += 1;
         j += 1;
-        if (i >= cchNewBin) {
+        if ((DWORD)i >= cchNewBin) {
             WcaLog(LOGMSG_STANDARD, "Failed to copy bin for service: %ls, buffer is not enough", svcName);
             return;
         }
@@ -893,8 +893,8 @@ void TryCreateStartServiceByShell(LPWSTR svcName, LPWSTR svcBinary, LPWSTR szSvc
         return;
     }
     hi = ShellExecuteW(NULL, L"open", L"sc", szCmd, NULL, SW_HIDE);
-    if ((int)hi <= 32) {
-        WcaLog(LOGMSG_STANDARD, "Failed to create service with shell : %d, last error: 0x%02X.", (int)hi, GetLastError());
+    if ((int)(INT_PTR)hi <= 32) {
+        WcaLog(LOGMSG_STANDARD, "Failed to create service with shell : %d, last error: 0x%02X.", (int)(INT_PTR)hi, GetLastError());
     }
     else {
         WcaLog(LOGMSG_STANDARD, "Service \"%ls\" is created with shell.", svcName);
@@ -934,8 +934,8 @@ void TryCreateStartServiceByShell(LPWSTR svcName, LPWSTR svcBinary, LPWSTR szSvc
         return;
     }
     hi = ShellExecuteW(NULL, L"open", L"cmd.exe", szCmd, NULL, SW_HIDE);
-    if ((int)hi <= 32) {
-        WcaLog(LOGMSG_STANDARD, "Failed to start service with shell : %d, last error: 0x%02X.", (int)hi, GetLastError());
+    if ((int)(INT_PTR)hi <= 32) {
+        WcaLog(LOGMSG_STANDARD, "Failed to start service with shell : %d, last error: 0x%02X.", (int)(INT_PTR)hi, GetLastError());
     }
     else {
         WcaLog(LOGMSG_STANDARD, "Service \"%ls\" is started with shell.", svcName);
@@ -984,8 +984,8 @@ void TryStopDeleteServiceByShell(LPWSTR svcName)
         return;
     }
     hi = ShellExecuteW(NULL, L"open", L"cmd.exe", szCmd, NULL, SW_HIDE);
-    if ((int)hi <= 32) {
-        WcaLog(LOGMSG_STANDARD, "Failed to delete service with shell : %d, last error: 0x%02X.", (int)hi, GetLastError());
+    if ((int)(INT_PTR)hi <= 32) {
+        WcaLog(LOGMSG_STANDARD, "Failed to delete service with shell : %d, last error: 0x%02X.", (int)(INT_PTR)hi, GetLastError());
     }
     else {
         WcaLog(LOGMSG_STANDARD, "Service \"%ls\" deletion is completed without errors with shell,", svcName);

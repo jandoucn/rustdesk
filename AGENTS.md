@@ -1,5 +1,14 @@
 # RustDesk Guide
 
+## 定制仓库
+
+这个仓库是私人定制客户端。以后按下面做，不要再改回自动构建，也不要写成英文说明。
+
+* 安装包只由手动触发的 **Flutter Tag Build** 产出。不要给提交、定时任务或打版本号 tag 加自动构建。
+* 推送到 GitHub 的 commit 说明用中文。类型前缀可以留英文，主题和正文用中文，例如 `fix: 隐藏被控端连接窗口`。
+* Release 标题、正文和 tag 说明用中文。版本变化写在 `release-notes.zh.md`，打 tag 时原文放进 Release。
+* 不要在提交说明、Release 或 tag 说明里写英文句子。代码、路径、命令和 `RustDesk`、`SOS` 这类名称保持原样。
+
 ## Project Layout
 
 ### Directory Structure

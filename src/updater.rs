@@ -499,13 +499,12 @@ pub fn start_auto_update_macos() {
             log::info!("[root-update] Auto-update scheduler thread started.");
             std::thread::sleep(INITIAL_CHECK_DELAY);
             wait_for_failed_update_retry();
-            let mut interval = DUR_ONE_DAY;
             loop {
                 log::info!("[root-update] Running scheduled update check...");
                 let no_active_conns = has_no_active_conns_ipc();
-                if !no_active_conns {
+                let interval = if !no_active_conns {
                     log::info!("[root-update] Active session in progress, retrying in 10 min.");
-                    interval = MIN_INTERVAL;
+                    MIN_INTERVAL
                 } else {
                     match check_update_as_root() {
                         Ok(update_started) => {
@@ -513,17 +512,17 @@ pub fn start_auto_update_macos() {
                                 // The replacement script is detached and may fail
                                 // after this process returns. Always retry at the
                                 // failure interval until the new daemon replaces us.
-                                interval = RETRY_INTERVAL;
+                                RETRY_INTERVAL
                             } else {
-                                interval = DUR_ONE_DAY;
+                                DUR_ONE_DAY
                             }
                         }
                         Err(e) => {
                             log::error!("[root-update] Update check failed: {}", e);
-                            interval = RETRY_INTERVAL;
+                            RETRY_INTERVAL
                         }
                     }
-                }
+                };
                 std::thread::sleep(interval);
             }
         });

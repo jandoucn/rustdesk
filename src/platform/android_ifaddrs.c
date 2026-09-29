@@ -72,6 +72,8 @@ static int rd_nl_parse(char *buf, int len, unsigned short reply_type, unsigned i
 {
     struct nlmsghdr *nlh = (struct nlmsghdr *)buf;
 
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wsign-compare"
     for (; NLMSG_OK(nlh, len); nlh = NLMSG_NEXT(nlh, len)) {
         if (nlh->nlmsg_seq != seq)
             continue;
@@ -79,6 +81,7 @@ static int rd_nl_parse(char *buf, int len, unsigned short reply_type, unsigned i
             *done = 1;
             return 0;
         }
+#pragma clang diagnostic pop
         if (nlh->nlmsg_type == NLMSG_ERROR) {
             struct nlmsgerr *err = (struct nlmsgerr *)NLMSG_DATA(nlh);
             if (nlh->nlmsg_len >= NLMSG_LENGTH(sizeof(*err)) && err->error != 0)
