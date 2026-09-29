@@ -3776,7 +3776,7 @@ fn get_reg_msi_key(subkey: &str, is_msi: Option<bool>) -> ResultType<Option<Stri
 }
 
 // Double confirm the process name
-fn kill_process_by_pids(name: &str, pids: Vec<Pid>) -> ResultType<()> {
+pub fn kill_process_by_pids(name: &str, pids: Vec<Pid>) -> ResultType<()> {
     let name = name.to_lowercase();
     let s = System::new_all();
     // No need to check all names of `pids` first, and kill them then.

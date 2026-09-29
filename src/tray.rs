@@ -9,6 +9,20 @@ use std::sync::{Arc, Mutex};
 #[cfg(windows)]
 use std::time::Duration;
 
+#[cfg(windows)]
+fn close_windows_desktop_windows() {
+    let app_exe_name = format!("{}.exe", crate::get_app_name());
+    let current = std::process::id();
+    let mut pids = crate::platform::get_pids_of_process_with_args::<_, &str>(&app_exe_name, &[]);
+    pids.retain(|pid| pid.as_u32() != current);
+    if !pids.is_empty() {
+        allow_err!(crate::platform::windows::kill_process_by_pids(
+            &app_exe_name,
+            pids
+        ));
+    }
+}
+
 pub fn start_tray() {
     if crate::ui_interface::get_builtin_option(keys::OPTION_HIDE_TRAY) == "Y" {
         #[cfg(not(target_os = "macos"))]
@@ -213,8 +227,14 @@ fn make_tray() -> hbb_common::ResultType<()> {
                     }
                     */
                     if cfg!(windows) {
-                        // Leave the Windows service running. The tray destructor
-                        // removes the icon; do not hide and restore it around Exit.
+                        // Leave the Windows service running. Remember that the
+                        // user dismissed the tray so a later connection does not
+                        // bring the icon back. Opening the desktop app clears it.
+                        hbb_common::config::Config::set_option(
+                            "hide-tray".to_owned(),
+                            "Y".to_owned(),
+                        );
+                        close_windows_desktop_windows();
                         *control_flow = ControlFlow::Exit;
                     } else {
                         // Remove the icon first: on success `uninstall_service()` ends

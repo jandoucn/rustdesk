@@ -2833,7 +2833,10 @@ impl Connection {
             });
             #[cfg(all(windows, feature = "flutter"))]
             std::thread::spawn(move || {
-                if crate::is_server() && !crate::check_process("--tray", false) {
+                if crate::is_server()
+                    && hbb_common::config::Config::get_option("hide-tray") != "Y"
+                    && !crate::check_process("--tray", false)
+                {
                     crate::platform::run_as_user(vec!["--tray"]).ok();
                 }
             });
