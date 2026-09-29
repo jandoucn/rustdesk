@@ -253,14 +253,17 @@ fn make_tray() -> hbb_common::ResultType<()> {
                         return;
                     }
                     */
-                    if cfg!(windows) {
+                    #[cfg(windows)]
+                    {
                         // Leave the Windows service running. Remember that the
                         // user dismissed the tray so a later connection does not
                         // bring the icon back. Opening the desktop app clears it.
                         set_windows_tray_dismissed(true);
                         close_windows_desktop_windows();
                         *control_flow = ControlFlow::Exit;
-                    } else {
+                    }
+                    #[cfg(not(windows))]
+                    {
                         // Remove the icon first: on success `uninstall_service()` ends
                         // this process with `std::process::exit`, which skips the
                         // destructor that would remove it, leaving a ghost icon behind.
