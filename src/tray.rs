@@ -212,28 +212,18 @@ fn make_tray() -> hbb_common::ResultType<()> {
                         return;
                     }
                     */
-                    // Remove the icon first: on success `uninstall_service()` ends
-                    // this process with `std::process::exit`, which skips the
-                    // destructor that would remove it, leaving a ghost icon behind.
-                    #[cfg(windows)]
-                    let _ = _tray_icon
-                        .lock()
-                        .unwrap()
-                        .as_mut()
-                        .map(|t| t.set_visible(false));
                     if cfg!(windows) {
+                        // Leave the Windows service running. The tray destructor
+                        // removes the icon; do not hide and restore it around Exit.
                         *control_flow = ControlFlow::Exit;
-                    } else if !crate::platform::uninstall_service(false, false) {
-                        *control_flow = ControlFlow::Exit;
+                    } else {
+                        // Remove the icon first: on success `uninstall_service()` ends
+                        // this process with `std::process::exit`, which skips the
+                        // destructor that would remove it, leaving a ghost icon behind.
+                        if !crate::platform::uninstall_service(false, false) {
+                            *control_flow = ControlFlow::Exit;
+                        }
                     }
-                    // Still alive, so stopping the service failed or was cancelled
-                    // in the UAC prompt. Show the icon again.
-                    #[cfg(windows)]
-                    let _ = _tray_icon
-                        .lock()
-                        .unwrap()
-                        .as_mut()
-                        .map(|t| t.set_visible(true));
                 } else if event.id == open_i.id() {
                     open_func();
                 }
