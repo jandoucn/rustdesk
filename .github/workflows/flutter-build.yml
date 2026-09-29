@@ -256,12 +256,11 @@ jobs:
         with:
           prefix-key: ${{ matrix.job.os }}
 
-      - name: Setup vcpkg with Github Actions binary cache
-        uses: lukka/run-vcpkg@b1a0dd252f06b9e25b3c022a9a03bd7a427fb6a2 # v11
-        with:
-          vcpkgDirectory: C:\vcpkg
-          vcpkgGitCommitId: ${{ env.VCPKG_COMMIT_ID }}
-          doNotCache: false
+      - name: Setup vcpkg
+        shell: bash
+        env:
+          VCPKG_ROOT: C:/vcpkg
+        run: bash .github/scripts/bootstrap-vcpkg.sh
 
       - name: Install vcpkg dependencies
         env:
@@ -527,12 +526,11 @@ jobs:
         with:
           prefix-key: ${{ matrix.job.os }}-sciter
 
-      - name: Setup vcpkg with Github Actions binary cache
-        uses: lukka/run-vcpkg@b1a0dd252f06b9e25b3c022a9a03bd7a427fb6a2 # v11
-        with:
-          vcpkgDirectory: C:\vcpkg
-          vcpkgGitCommitId: ${{ env.VCPKG_COMMIT_ID }}
-          doNotCache: false
+      - name: Setup vcpkg
+        shell: bash
+        env:
+          VCPKG_ROOT: C:/vcpkg
+        run: bash .github/scripts/bootstrap-vcpkg.sh
 
       - name: Install vcpkg dependencies
         env:
@@ -677,11 +675,11 @@ jobs:
             git apply ${{ github.workspace }}/.github/patches/flutter_3.24.4_dropdown_menu_enableFilter.diff
           fi
 
-      - name: Setup vcpkg with Github Actions binary cache
-        uses: lukka/run-vcpkg@b1a0dd252f06b9e25b3c022a9a03bd7a427fb6a2 # v11
-        with:
-          vcpkgGitCommitId: ${{ env.VCPKG_COMMIT_ID }}
-          doNotCache: false
+      - name: Setup vcpkg
+        shell: bash
+        env:
+          VCPKG_ROOT: ${{ github.workspace }}/vcpkg
+        run: bash .github/scripts/bootstrap-vcpkg.sh
 
       - name: Install vcpkg dependencies
         run: |
@@ -881,11 +879,11 @@ jobs:
         working-directory: flutter
         run: flutter test --timeout 60s test/cursor_size_test.dart test/cursor_replay_test.dart test/cursor_default_test.dart
 
-      - name: Setup vcpkg with Github Actions binary cache
-        uses: lukka/run-vcpkg@b1a0dd252f06b9e25b3c022a9a03bd7a427fb6a2 # v11
-        with:
-          vcpkgGitCommitId: ${{ env.VCPKG_COMMIT_ID }}
-          doNotCache: false
+      - name: Setup vcpkg
+        shell: bash
+        env:
+          VCPKG_ROOT: ${{ github.workspace }}/vcpkg
+        run: bash .github/scripts/bootstrap-vcpkg.sh
 
       - name: Install vcpkg dependencies
         run: |
@@ -1141,12 +1139,11 @@ jobs:
           ndk-version: ${{ env.NDK_VERSION }}
           add-to-path: true
 
-      - name: Setup vcpkg with Github Actions binary cache
-        uses: lukka/run-vcpkg@b1a0dd252f06b9e25b3c022a9a03bd7a427fb6a2 # v11
-        with:
-          vcpkgDirectory: /opt/artifacts/vcpkg
-          vcpkgGitCommitId: ${{ env.VCPKG_COMMIT_ID }}
-          doNotCache: false
+      - name: Setup vcpkg
+        shell: bash
+        env:
+          VCPKG_ROOT: /opt/artifacts/vcpkg
+        run: bash .github/scripts/bootstrap-vcpkg.sh
 
       - name: Install vcpkg dependencies
         run: |
