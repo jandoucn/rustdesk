@@ -2715,6 +2715,7 @@ connect(BuildContext context, String id,
           MaterialPageRoute(
             builder: (BuildContext context) => desktop_remote.RemotePage(
                 id: id,
+                toolbarState: ToolbarState(),
                 password: password,
                 isSharedPassword: isSharedPassword,
                 forceRelay: forceRelay,

@@ -148,7 +148,7 @@ pub fn is_prelogin() -> bool {
 // If we wanted to get the command line ourselves, there would be a lot of new code.
 #[allow(dead_code)]
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
-fn get_pids_of_process_with_args<S1: AsRef<str>, S2: AsRef<str>>(
+pub fn get_pids_of_process_with_args<S1: AsRef<str>, S2: AsRef<str>>(
     name: S1,
     args: &[S2],
 ) -> Vec<Pid> {
