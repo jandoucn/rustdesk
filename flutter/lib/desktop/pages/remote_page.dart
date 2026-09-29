@@ -46,6 +46,7 @@ class RemotePage extends StatefulWidget {
     this.switchUuid,
     this.forceRelay,
     this.isSharedPassword,
+    this.isViewOnly,
   }) : super(key: key) {
     initSharedStates(id);
   }
@@ -60,6 +61,7 @@ class RemotePage extends StatefulWidget {
   final String? switchUuid;
   final bool? forceRelay;
   final bool? isSharedPassword;
+  final bool? isViewOnly;
   final SimpleWrapper<State<RemotePage>?> _lastState = SimpleWrapper(null);
   final DesktopTabController? tabController;
 
@@ -186,6 +188,24 @@ class _RemotePageState extends State<RemotePage>
     _ffi.dialogManager.loadMobileActionsOverlayVisible();
     WidgetsBinding.instance.addPostFrameCallback((_) {
       // Session option should be set after models.dart/FFI.start
+      if (widget.isViewOnly == true &&
+          !bind.sessionGetToggleOptionSync(
+              sessionId: sessionId, arg: kOptionToggleViewOnly)) {
+        bind.sessionToggleOption(
+            sessionId: sessionId, value: kOptionToggleViewOnly);
+      }
+      if (widget.isViewOnly == true &&
+          bind.sessionGetToggleOptionSync(
+              sessionId: sessionId, arg: kOptionToggleShowMyCursor)) {
+        bind.sessionToggleOption(
+            sessionId: sessionId, value: kOptionToggleShowMyCursor);
+      }
+      _ffi.ffiModel.setViewOnly(
+          widget.id,
+          bind.sessionGetToggleOptionSync(
+              sessionId: sessionId, arg: kOptionToggleViewOnly));
+      _ffi.ffiModel.setShowMyCursor(bind.sessionGetToggleOptionSync(
+          sessionId: sessionId, arg: kOptionToggleShowMyCursor));
       _showRemoteCursor.value = bind.sessionGetToggleOptionSync(
           sessionId: sessionId, arg: 'show-remote-cursor');
       _zoomCursor.value = bind.sessionGetToggleOptionSync(
