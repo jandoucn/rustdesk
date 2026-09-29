@@ -70,7 +70,11 @@ fn make_tray() -> hbb_common::ResultType<()> {
     ) == "Y";
     // The tray icon is only shown when the service is running, so we don't need to check
     // the `stop-service` option here.
-    let quit_i = if !hide_stop_service {
+    // Windows keeps the service after the tray exits. "Stop service" would
+    // uninstall it, so the tray only closes its own icon and window.
+    let quit_i = if cfg!(windows) {
+        Some(MenuItem::new(translate("Quit".to_owned()), true, None))
+    } else if !hide_stop_service {
         Some(MenuItem::new(translate("Stop service".to_owned()), true, None))
     } else {
         None
@@ -217,7 +221,9 @@ fn make_tray() -> hbb_common::ResultType<()> {
                         .unwrap()
                         .as_mut()
                         .map(|t| t.set_visible(false));
-                    if !crate::platform::uninstall_service(false, false) {
+                    if cfg!(windows) {
+                        *control_flow = ControlFlow::Exit;
+                    } else if !crate::platform::uninstall_service(false, false) {
                         *control_flow = ControlFlow::Exit;
                     }
                     // Still alive, so stopping the service failed or was cancelled

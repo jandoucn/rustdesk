@@ -25,5 +25,6 @@
 - 手动构建的 Release 标签按 UTC 日期加两位序号，例如 `20260929-01`。同一天再次构建会变成 `20260929-02`。
 - 安装包文件名带版本类型，`sos` 或 `standard`。
 - 当前构建 macOS ARM、Windows x64 和 Android arm64。
+- Windows 安装后开机只启动托盘，不显示主窗口。点关闭会缩到右下角。托盘里退出只关掉窗口和托盘，Windows 服务继续在后台运行。
 - 没有 Apple 证书时，macOS 安装包保持普通 ad-hoc 签名，不启用 hardened runtime。复制进来的 service 会单独签名，再给整个应用补封。下载后执行 `xattr -cr` 即可打开。有证书时仍走 Developer ID 和公证。
 - 登录和地址簿兼容旧版 rustdesk-api。
