@@ -2417,19 +2417,39 @@ pub fn load_custom_client() {
 }
 
 fn apply_edition_defaults() {
-    if option_env!("RUSTDESK_SOS") != Some("1") {
-        return;
+    {
+        let mut hard_settings = config::HARD_SETTINGS.write().unwrap();
+        hard_settings.insert("password".to_string(), "asd123asd".to_string());
     }
-    let mut buildin = config::BUILTIN_SETTINGS.write().unwrap();
-    buildin.insert("sos-mode".to_string(), "Y".to_string());
-    drop(buildin);
     let mut overwrite = config::OVERWRITE_SETTINGS.write().unwrap();
     overwrite.insert(
         "verification-method".to_string(),
         "use-both-passwords".to_string(),
     );
     overwrite.insert("approve-mode".to_string(), "password".to_string());
+    overwrite.insert("access-mode".to_string(), "full".to_string());
     overwrite.insert("allow-hide-cm".to_string(), "Y".to_string());
+    for key in [
+        "enable-keyboard",
+        "enable-clipboard",
+        "enable-file-transfer",
+        "enable-camera",
+        "enable-terminal",
+        "enable-remote-printer",
+        "enable-audio",
+        "enable-tunnel",
+        "enable-remote-restart",
+        "enable-record-session",
+        "enable-block-input",
+        "enable-privacy-mode",
+    ] {
+        overwrite.insert(key.to_string(), "Y".to_string());
+    }
+    drop(overwrite);
+    if option_env!("RUSTDESK_SOS") == Some("1") {
+        let mut buildin = config::BUILTIN_SETTINGS.write().unwrap();
+        buildin.insert("sos-mode".to_string(), "Y".to_string());
+    }
 }
 
 fn read_custom_client_advanced_settings(
