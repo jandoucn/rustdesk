@@ -2362,7 +2362,7 @@ impl UserDefaultConfig {
             #[cfg(any(target_os = "android", target_os = "ios"))]
             keys::OPTION_VIEW_STYLE => self.get_string(key, "adaptive", vec!["original"]),
             #[cfg(not(any(target_os = "android", target_os = "ios")))]
-            keys::OPTION_VIEW_STYLE => self.get_string(key, "original", vec!["adaptive"]),
+            keys::OPTION_VIEW_STYLE => self.get_string(key, "adaptive", vec!["original"]),
             keys::OPTION_SCROLL_STYLE => {
                 self.get_string(key, "scrollauto", vec!["scrolledge", "scrollbar"])
             }
@@ -3554,6 +3554,25 @@ mod tests {
         DEFAULT_DISPLAY_SETTINGS.write().unwrap().clear();
         OVERWRITE_DISPLAY_SETTINGS.write().unwrap().clear();
         LOCAL_CONFIG.write().unwrap().options.clear();
+    }
+
+    #[test]
+    fn test_default_view_style_is_adaptive() {
+        assert_eq!(
+            UserDefaultConfig::default().get(keys::OPTION_VIEW_STYLE),
+            "adaptive"
+        );
+
+        let explicit_original = UserDefaultConfig {
+            options: HashMap::from([(
+                keys::OPTION_VIEW_STYLE.to_owned(),
+                "original".to_owned(),
+            )]),
+        };
+        assert_eq!(
+            explicit_original.get(keys::OPTION_VIEW_STYLE),
+            "original"
+        );
     }
 
     #[test]

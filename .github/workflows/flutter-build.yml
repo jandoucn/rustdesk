@@ -55,8 +55,8 @@ env:
   # Release asset names must be unique when standard and SOS run together.
   EDITION: "${{ inputs.edition }}"
   PRODUCT: "rustdesk-yan"
-  BUILD_NUMBER: "20260930.1"
-  BUILD_SEQ: "2026093001"
+  BUILD_NUMBER: "20260930.2"
+  BUILD_SEQ: "2026093002"
   CHANNEL: "stable"
   RUSTDESK_SOS: ${{ inputs.edition == 'sos' && '1' || '' }}
   NDK_VERSION: "r28c"
