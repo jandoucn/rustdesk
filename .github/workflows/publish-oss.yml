@@ -43,6 +43,24 @@ jobs:
           mkdir -p release-assets
           gh release download "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --dir release-assets
           test -n "$(find release-assets -type f -maxdepth 1 -print -quit)"
+          python3 - <<'PY'
+          import pathlib
+          import re
+
+          names = sorted(path.name for path in pathlib.Path('release-assets').iterdir() if path.is_file())
+          expected = []
+          for edition in ('standard', 'sos'):
+              expected.extend((edition, pattern) for pattern in (
+                  rf'^rustdesk-[^-]+-{edition}-aarch64\.dmg$',
+                  rf'^rustdesk-[^-]+-{edition}-android-aarch64\.apk$',
+                  rf'^rustdesk-[^-]+-{edition}-windows-x86_64\.exe$',
+                  rf'^rustdesk-[^-]+-{edition}-windows-x86_64\.msi$',
+              ))
+          missing = [f'{edition}: {pattern}' for edition, pattern in expected
+                     if not any(re.match(pattern, name) for name in names)]
+          if len(names) != 8 or missing:
+              raise SystemExit(f'Expected 8 standard/SOS release assets; names={names}, missing={missing}')
+          PY
 
       - name: Install OSS publisher
         run: python3 -m pip install --disable-pip-version-check oss2
@@ -60,6 +78,7 @@ jobs:
           import re
           import time
           import oss2
+          from oss2.exceptions import AccessDenied
 
           bucket_name = os.environ['OSS_BUCKET']
           endpoint = os.environ['OSS_ENDPOINT']
@@ -73,43 +92,57 @@ jobs:
           auth = oss2.Auth(key_id, key_secret)
           bucket = oss2.Bucket(auth, f'https://{endpoint}', bucket_name)
           release_prefix = f'{prefix}/{tag}/'
-          assets = []
-          for path in sorted(pathlib.Path('release-assets').iterdir()):
-              if not path.is_file():
-                  continue
-              digest = hashlib.sha256(path.read_bytes()).hexdigest()
-              object_key = release_prefix + path.name
-              bucket.put_object_from_file(object_key, str(path))
-              uploaded = bucket.head_object(object_key)
-              if uploaded.content_length != path.stat().st_size:
-                  raise SystemExit(f'OSS size mismatch for {object_key}')
-              assets.append({'name': path.name, 'key': object_key, 'size': path.stat().st_size, 'sha256': digest})
+          try:
+              assets = []
+              for path in sorted(pathlib.Path('release-assets').iterdir()):
+                  if not path.is_file():
+                      continue
+                  digest = hashlib.sha256(path.read_bytes()).hexdigest()
+                  object_key = release_prefix + path.name
+                  bucket.put_object_from_file(object_key, str(path))
+                  uploaded = bucket.head_object(object_key)
+                  if uploaded.content_length != path.stat().st_size:
+                      raise SystemExit(f'OSS size mismatch for {object_key}')
+                  assets.append({'name': path.name, 'key': object_key, 'size': path.stat().st_size, 'sha256': digest})
 
-          catalog = {
-              'schema': 1,
-              'tag': tag,
-              'published_at': int(time.time()),
-              'download_base': 'https://download.yan.life/',
-              'assets': assets,
-          }
-          catalog_key = release_prefix + 'catalog.json'
-          bucket.put_object(catalog_key, json.dumps(catalog, ensure_ascii=False, separators=(',', ':')).encode())
-          bucket.head_object(catalog_key)
+              catalog = {
+                  'schema': 1,
+                  'tag': tag,
+                  'published_at': int(time.time()),
+                  'download_base': 'https://download.yan.life/',
+                  'assets': assets,
+              }
+              catalog_key = release_prefix + 'catalog.json'
+              bucket.put_object(catalog_key, json.dumps(catalog, ensure_ascii=False, separators=(',', ':')).encode())
+              bucket.head_object(catalog_key)
 
-          # Keep the newest five stable release prefixes. Do not delete beta objects.
-          tags = set()
-          for obj in oss2.ObjectIterator(bucket, prefix=f'{prefix}/'):
-              rest = obj.key[len(prefix) + 1:]
-              if '/' in rest:
-                  tags.add(rest.split('/', 1)[0])
-          def sort_key(value):
-              match = re.search(r'build(\d+)', value)
-              return (int(match.group(1)) if match else 0, value)
-          for old_tag in sorted(tags, key=sort_key, reverse=True)[5:]:
-              old_prefix = f'{prefix}/{old_tag}/'
-              for obj in oss2.ObjectIterator(bucket, prefix=old_prefix):
-                  bucket.delete_object(obj.key)
-          print(json.dumps({'tag': tag, 'uploaded': len(assets), 'retained': 5}))
+              # Keep the newest five stable release prefixes. Do not delete beta objects.
+              stable_tag = re.compile(r'^yan-v(\d+)\.(\d+)\.(\d+)-build(\d{8})\.(\d+)$')
+              tags = set()
+              for obj in oss2.ObjectIterator(bucket, prefix=f'{prefix}/'):
+                  rest = obj.key[len(prefix) + 1:]
+                  if '/' in rest:
+                      candidate = rest.split('/', 1)[0]
+                      if stable_tag.fullmatch(candidate):
+                          tags.add(candidate)
+              def sort_key(value):
+                  match = stable_tag.fullmatch(value)
+                  return tuple(int(part) for part in match.groups())
+              for old_tag in sorted(tags, key=sort_key, reverse=True)[5:]:
+                  old_prefix = f'{prefix}/{old_tag}/'
+                  for obj in oss2.ObjectIterator(bucket, prefix=old_prefix):
+                      bucket.delete_object(obj.key)
+              print(json.dumps({'tag': tag, 'uploaded': len(assets), 'retained': 5}))
+          except AccessDenied as exc:
+              details = getattr(exc, 'details', {})
+              request_id = getattr(exc, 'request_id', None) or details.get('RequestId', 'unknown')
+              raise SystemExit(
+                  'OSS access denied. Grant the configured RAM identity '
+                  f'oss:PutObject/oss:GetObject/oss:DeleteObject on '
+                  f'acs:oss:*:*:{bucket_name}/{prefix}/* and oss:ListObjects on '
+                  f'acs:oss:*:*:{bucket_name}; '
+                  f'request-id={request_id}'
+              ) from exc
           PY
 
       - name: Probe public endpoint routing

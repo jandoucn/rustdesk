@@ -19,6 +19,7 @@ import '../../models/input_model.dart';
 import '../../models/platform_model.dart';
 import '../../common/shared_state.dart';
 import '../../utils/image.dart';
+import '../../utils/session_option_defaults.dart';
 import '../widgets/remote_toolbar.dart';
 import '../widgets/kb_layout_type_chooser.dart';
 import '../widgets/tabbar_widget.dart';
@@ -188,13 +189,17 @@ class _RemotePageState extends State<RemotePage>
     _ffi.dialogManager.loadMobileActionsOverlayVisible();
     WidgetsBinding.instance.addPostFrameCallback((_) {
       // Session option should be set after models.dart/FFI.start
-      if (widget.isViewOnly == true &&
-          !bind.sessionGetToggleOptionSync(
-              sessionId: sessionId, arg: kOptionToggleViewOnly)) {
+      final requestedViewOnly = widget.isViewOnly == true;
+      final currentViewOnly = bind.sessionGetToggleOptionSync(
+          sessionId: sessionId, arg: kOptionToggleViewOnly);
+      if (shouldApplySessionOptionDefaults(
+              hasTabWindowId: widget.tabWindowId != null) &&
+          shouldToggleSessionOption(
+              current: currentViewOnly, requested: requestedViewOnly)) {
         bind.sessionToggleOption(
             sessionId: sessionId, value: kOptionToggleViewOnly);
       }
-      if (widget.isViewOnly == true &&
+      if (requestedViewOnly &&
           bind.sessionGetToggleOptionSync(
               sessionId: sessionId, arg: kOptionToggleShowMyCursor)) {
         bind.sessionToggleOption(

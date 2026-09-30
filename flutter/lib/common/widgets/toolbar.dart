@@ -575,29 +575,6 @@ List<TTextMenu> toolbarControls(BuildContext context, String id, FFI ffi) {
       onPressed: () => sessionRefreshVideo(sessionId, pi),
     ));
   }
-  // record
-  if (!(isDesktop || isWeb) &&
-      bind.mainGetLocalOption(key: kOptionHideRecordingButton) != 'Y' &&
-      (ffi.recordingModel.start || (perms["recording"] != false))) {
-    v.add(TTextMenu(
-        child: Row(
-          children: [
-            Text(translate(ffi.recordingModel.start
-                ? 'Stop session recording'
-                : 'Start session recording')),
-            Padding(
-              padding: EdgeInsets.only(left: 12),
-              child: Icon(
-                  ffi.recordingModel.start
-                      ? Icons.pause_circle_filled
-                      : Icons.videocam_outlined,
-                  color: MyTheme.accent),
-            )
-          ],
-        ),
-        onPressed: () => ffi.recordingModel.toggle()));
-  }
-
   // to-do:
   // 1. Web desktop
   // 2. Mobile, copy the image to the clipboard

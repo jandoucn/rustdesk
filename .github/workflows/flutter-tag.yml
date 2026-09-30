@@ -34,6 +34,7 @@ jobs:
       - uses: actions/checkout@v4
       - id: date
         env:
+          CUSTOM_TAG: ${{ inputs.tag }}
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
@@ -41,8 +42,8 @@ jobs:
           build_number=$(python3 -c 'import json; print(json.load(open("version.json"))["build_number"])')
           channel=$(python3 -c 'import json; print(json.load(open("version.json"))["channel"])')
           base="yan-v${version}"
-          if [ "${{ inputs.tag }}" != "" ]; then
-            tag="${{ inputs.tag }}"
+          if [ "$CUSTOM_TAG" != "" ]; then
+            tag="$CUSTOM_TAG"
           elif [ "$channel" = "stable" ] && ! gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${base}" >/dev/null 2>&1; then
             tag="$base"
           else
@@ -55,7 +56,7 @@ jobs:
     needs: release-tag
     if: inputs.standard || inputs.sos
     strategy:
-      fail-fast: false
+      fail-fast: true
       matrix:
         edition: ${{ fromJson(format('[{0}{1}{2}]', inputs.standard && '"standard"' || '', inputs.standard && inputs.sos && ',' || '', inputs.sos && '"sos"' || '')) }}
     uses: ./.github/workflows/flutter-build.yml

@@ -10,7 +10,6 @@ import 'package:flutter_hbb/mobile/widgets/floating_mouse_widgets.dart';
 import 'package:flutter_hbb/mobile/widgets/gesture_help.dart';
 import 'package:flutter_hbb/models/chat_model.dart';
 import 'package:flutter_keyboard_visibility/flutter_keyboard_visibility.dart';
-import 'package:flutter_svg/svg.dart';
 import 'package:get/get.dart';
 import 'package:provider/provider.dart';
 
@@ -22,6 +21,7 @@ import '../../models/input_model.dart';
 import '../../models/model.dart';
 import '../../models/platform_model.dart';
 import '../../utils/image.dart';
+import '../../utils/session_option_defaults.dart';
 import '../widgets/dialog.dart';
 import '../widgets/custom_scale_widget.dart';
 
@@ -102,13 +102,16 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
       isSharedPassword: widget.isSharedPassword,
       forceRelay: widget.forceRelay,
     );
-    if (widget.isViewOnly == true) {
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (!bind.sessionGetToggleOptionSync(
-            sessionId: sessionId, arg: kOptionToggleViewOnly)) {
-          bind.sessionToggleOption(
-              sessionId: sessionId, value: kOptionToggleViewOnly);
-        }
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      final requestedViewOnly = widget.isViewOnly == true;
+      final currentViewOnly = bind.sessionGetToggleOptionSync(
+          sessionId: sessionId, arg: kOptionToggleViewOnly);
+      if (shouldToggleSessionOption(
+          current: currentViewOnly, requested: requestedViewOnly)) {
+        bind.sessionToggleOption(
+            sessionId: sessionId, value: kOptionToggleViewOnly);
+      }
+      if (requestedViewOnly) {
         if (!bind.sessionGetToggleOptionSync(
             sessionId: sessionId, arg: 'show-remote-cursor')) {
           bind.sessionToggleOption(
@@ -121,8 +124,10 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
         ShowRemoteCursorState.find(widget.id).value =
             bind.sessionGetToggleOptionSync(
                 sessionId: sessionId, arg: 'show-remote-cursor');
-      });
-    }
+      } else {
+        gFFI.ffiModel.setViewOnly(widget.id, false);
+      }
+    });
     WidgetsBinding.instance.addPostFrameCallback((_) {
       SystemChrome.setEnabledSystemUIMode(SystemUiMode.manual, overlays: []);
       gFFI.dialogManager
@@ -629,25 +634,15 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
                                     () => _showGestureHelp = !_showGestureHelp),
                               ),
                             ]) +
-                  (isWeb
-                      ? []
-                      : <Widget>[
-                          futureBuilder(
-                              future: gFFI.invokeMethod(
-                                  "get_value", "KEY_IS_SUPPORT_VOICE_CALL"),
-                              hasData: (isSupportVoiceCall) => IconButton(
-                                    color: Colors.white,
-                                    icon: isAndroid && isSupportVoiceCall
-                                        ? SvgPicture.asset('assets/chat.svg',
-                                            colorFilter: ColorFilter.mode(
-                                                Colors.white, BlendMode.srcIn))
-                                        : Icon(Icons.message),
-                                    onPressed: () =>
-                                        isAndroid && isSupportVoiceCall
-                                            ? showChatOptions(widget.id)
-                                            : onPressedTextChat(widget.id),
-                                  ))
-                        ]) +
+                  (!isWeb && !isAndroid
+                      ? <Widget>[
+                          IconButton(
+                            color: Colors.white,
+                            icon: Icon(Icons.message),
+                            onPressed: () => onPressedTextChat(widget.id),
+                          )
+                        ]
+                      : <Widget>[]) +
                   [
                     IconButton(
                       color: Colors.white,
@@ -831,73 +826,6 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
   onPressedTextChat(String id) {
     gFFI.chatModel.changeCurrentKey(MessageKey(id, ChatModel.clientModeID));
     gFFI.chatModel.toggleChatOverlay();
-  }
-
-  showChatOptions(String id) async {
-    onPressVoiceCall() => bind.sessionRequestVoiceCall(sessionId: sessionId);
-    onPressEndVoiceCall() => bind.sessionCloseVoiceCall(sessionId: sessionId);
-
-    makeTextMenu(String label, Widget icon, VoidCallback onPressed,
-            {TextStyle? labelStyle}) =>
-        TTextMenu(
-          child: Text(translate(label), style: labelStyle),
-          trailingIcon: Transform.scale(
-            scale: (isDesktop || isWebDesktop) ? 0.8 : 1,
-            child: IgnorePointer(
-              child: IconButton(
-                onPressed: null,
-                icon: icon,
-              ),
-            ),
-          ),
-          onPressed: onPressed,
-        );
-
-    final isInVoice = [
-      VoiceCallStatus.waitingForResponse,
-      VoiceCallStatus.connected
-    ].contains(gFFI.chatModel.voiceCallStatus.value);
-    final menus = [
-      makeTextMenu('Text chat', Icon(Icons.message, color: MyTheme.accent),
-          () => onPressedTextChat(widget.id)),
-      isInVoice
-          ? makeTextMenu(
-              'End voice call',
-              SvgPicture.asset(
-                'assets/call_wait.svg',
-                colorFilter:
-                    ColorFilter.mode(Colors.redAccent, BlendMode.srcIn),
-              ),
-              onPressEndVoiceCall,
-              labelStyle: TextStyle(color: Colors.redAccent))
-          : makeTextMenu(
-              'Voice call',
-              SvgPicture.asset(
-                'assets/call_wait.svg',
-                colorFilter: ColorFilter.mode(MyTheme.accent, BlendMode.srcIn),
-              ),
-              onPressVoiceCall),
-    ];
-
-    final menuItems = menus
-        .asMap()
-        .entries
-        .map((e) => PopupMenuItem<int>(child: e.value.getChild(), value: e.key))
-        .toList();
-    Future.delayed(Duration.zero, () async {
-      final size = MediaQuery.of(context).size;
-      final x = 120.0;
-      final y = size.height;
-      var index = await showMenu(
-        context: context,
-        position: RelativeRect.fromLTRB(x, y, x, y),
-        items: menuItems,
-        elevation: 8,
-      );
-      if (index != null && index < menus.length) {
-        menus[index].onPressed?.call();
-      }
-    });
   }
 
   /// aka changeTouchMode

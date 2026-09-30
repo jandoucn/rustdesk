@@ -27,6 +27,7 @@ import 'package:flutter_hbb/models/desktop_render_texture.dart';
 import 'package:flutter_hbb/models/terminal_model.dart';
 import 'package:flutter_hbb/common/shared_state.dart';
 import 'package:flutter_hbb/utils/multi_window_manager.dart';
+import 'package:flutter_hbb/utils/session_option_defaults.dart';
 import 'package:flutter_hbb/utils/http_service.dart' as http;
 import 'package:tuple/tuple.dart';
 import 'package:image/image.dart' as img2;
@@ -1364,6 +1365,15 @@ class FfiModel with ChangeNotifier {
     _pi.username = evt['username'];
     _pi.hostname = evt['hostname'];
     _pi.platform = evt['platform'];
+    if (shouldAutoEnableControlCommandSwap(
+            localIsWindows: isWindows,
+            localIsAndroid: isAndroid,
+            peerIsMacOS: _pi.platform == kPeerPlatformMacOS) &&
+        !bind.sessionGetToggleOptionSync(
+            sessionId: sessionId, arg: 'allow_swap_key')) {
+      await bind.sessionToggleOption(
+          sessionId: sessionId, value: 'allow_swap_key');
+    }
     _pi.sasEnabled = evt['sas_enabled'] == 'true';
     final currentDisplay = int.parse(evt['current_display']);
     if (_pi.primaryDisplay == kInvalidDisplayIndex) {

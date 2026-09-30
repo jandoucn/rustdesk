@@ -2706,6 +2706,7 @@ connect(BuildContext context, String id,
               toolbarState: ToolbarState(),
               password: password,
               isSharedPassword: isSharedPassword,
+              isViewOnly: isViewOnly,
             ),
           ),
         );
