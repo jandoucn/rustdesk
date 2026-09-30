@@ -79,14 +79,7 @@ jobs:
                   continue
               digest = hashlib.sha256(path.read_bytes()).hexdigest()
               object_key = release_prefix + path.name
-              oss2.resumable_upload(
-                  bucket,
-                  object_key,
-                  str(path),
-                  multipart_threshold=10 * 1024 * 1024,
-                  part_size=10 * 1024 * 1024,
-                  num_threads=4,
-              )
+              bucket.put_object_from_file(object_key, str(path))
               uploaded = bucket.head_object(object_key)
               if uploaded.content_length != path.stat().st_size:
                   raise SystemExit(f'OSS size mismatch for {object_key}')
