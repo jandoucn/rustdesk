@@ -3,6 +3,10 @@
 // https://github.com/rust-windowing/winit
 
 use super::{CursorData, ResultType};
+use base::{
+    message_proto::{DisplayInfo, Resolution},
+    update::{MacUpdateResult, PendingUpdateEvent},
+};
 use cocoa::{
     appkit::{NSApp, NSApplication, NSApplicationActivationPolicy::*},
     base::{id, nil, BOOL, NO, YES},
@@ -22,14 +26,17 @@ use hbb_common::{
     bail, log,
     sysinfo::{Pid, Process, ProcessRefreshKind, System},
 };
-use base::message_proto::{DisplayInfo, Resolution};
 use include_dir::{include_dir, Dir};
 use objc::rc::autoreleasepool;
 use objc::{class, msg_send, sel, sel_impl};
 use scrap::{libc::c_void, quartz::ffi::*};
 use std::{
     collections::HashMap,
-    os::unix::process::CommandExt,
+    os::unix::{
+        fs::{MetadataExt, OpenOptionsExt, PermissionsExt},
+        io::AsRawFd,
+        process::CommandExt,
+    },
     path::{Path, PathBuf},
     process::{Command, Stdio},
     sync::Mutex,
@@ -51,6 +58,130 @@ fn get_update_temp_dir() -> PathBuf {
 #[inline]
 fn get_update_temp_dir_string() -> String {
     get_update_temp_dir().to_string_lossy().into_owned()
+}
+
+const ROOT_UPDATE_RESULT_PATH: &str = "/var/root/.rustdeskupdate_result";
+const ROOT_UPDATE_RESULT_CLAIM_PATH: &str = "/var/root/.rustdeskupdate_result.claimed";
+const ROOT_UPDATE_LOCK_PATH: &str = "/var/run/rustdesk-update.lock";
+
+fn acquire_root_update_lock() -> ResultType<std::fs::File> {
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .mode(0o600)
+        .custom_flags(hbb_common::libc::O_NOFOLLOW)
+        .open(ROOT_UPDATE_LOCK_PATH)?;
+    let metadata = file.metadata()?;
+    if !metadata.file_type().is_file() || metadata.uid() != 0 {
+        bail!("[root-update] update lock is not a root-owned regular file");
+    }
+    file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
+    let result = unsafe {
+        hbb_common::libc::flock(
+            file.as_raw_fd(),
+            hbb_common::libc::LOCK_EX | hbb_common::libc::LOCK_NB,
+        )
+    };
+    if result != 0 {
+        bail!("[root-update] another update is already running");
+    }
+    let descriptor_flags =
+        unsafe { hbb_common::libc::fcntl(file.as_raw_fd(), hbb_common::libc::F_GETFD) };
+    if descriptor_flags == -1 {
+        return Err(std::io::Error::last_os_error().into());
+    }
+    if unsafe {
+        hbb_common::libc::fcntl(
+            file.as_raw_fd(),
+            hbb_common::libc::F_SETFD,
+            descriptor_flags & !hbb_common::libc::FD_CLOEXEC,
+        )
+    } == -1
+    {
+        return Err(std::io::Error::last_os_error().into());
+    }
+    if Path::new(ROOT_UPDATE_RESULT_CLAIM_PATH).exists() {
+        bail!("[root-update] previous update result is awaiting delivery");
+    }
+    if let Some(result) = read_root_update_result(ROOT_UPDATE_RESULT_PATH) {
+        if result.status != "pending" {
+            bail!("[root-update] previous update result is awaiting delivery");
+        }
+        bail!("[root-update] previous update transaction did not reach a terminal state");
+    }
+    Ok(file)
+}
+
+fn write_root_update_result(result: &MacUpdateResult) -> ResultType<()> {
+    use std::{io::Write, os::unix::fs::OpenOptionsExt};
+    let body = result.encode()?;
+    let suffix = hex::encode(hbb_common::sodiumoxide::randombytes::randombytes(8));
+    let tmp = format!(
+        "{}.{}.{}",
+        ROOT_UPDATE_RESULT_PATH,
+        std::process::id(),
+        suffix
+    );
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(&tmp)?;
+    if let Err(err) = file
+        .write_all(body.as_bytes())
+        .and_then(|_| file.sync_all())
+    {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(err.into());
+    }
+    drop(file);
+    if let Err(err) = std::fs::rename(&tmp, ROOT_UPDATE_RESULT_PATH) {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(err.into());
+    }
+    Ok(())
+}
+
+fn read_root_update_result(path: &str) -> Option<MacUpdateResult> {
+    use std::io::Read;
+    let mut file = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(hbb_common::libc::O_NOFOLLOW | hbb_common::libc::O_CLOEXEC)
+        .open(path)
+        .ok()?;
+    let metadata = file.metadata().ok()?;
+    if !metadata.file_type().is_file()
+        || metadata.uid() != 0
+        || metadata.permissions().mode() & 0o7777 != 0o600
+    {
+        return None;
+    }
+    let mut body = String::new();
+    file.read_to_string(&mut body).ok()?;
+    let result = MacUpdateResult::decode(&body)?;
+    Some(result)
+}
+
+pub fn consume_root_update_result() -> Option<(MacUpdateResult, bool)> {
+    if let Some(result) = read_root_update_result(ROOT_UPDATE_RESULT_CLAIM_PATH) {
+        return Some((result, true));
+    }
+    let result = read_root_update_result(ROOT_UPDATE_RESULT_PATH)?;
+    if result.status == "pending" {
+        return Some((result, false));
+    }
+    std::fs::rename(ROOT_UPDATE_RESULT_PATH, ROOT_UPDATE_RESULT_CLAIM_PATH).ok()?;
+    let claimed = read_root_update_result(ROOT_UPDATE_RESULT_CLAIM_PATH)?;
+    if claimed.event.transaction_id != result.event.transaction_id {
+        return None;
+    }
+    Some((claimed, true))
+}
+
+pub fn clear_claimed_root_update_result() -> ResultType<()> {
+    std::fs::remove_file(ROOT_UPDATE_RESULT_CLAIM_PATH)?;
+    Ok(())
 }
 
 /// Global mutex to serialize CoreGraphics cursor operations.
@@ -971,6 +1102,38 @@ pub fn update_from_dmg(dmg_path: &str) -> ResultType<()> {
     Ok(())
 }
 
+pub fn request_update_from_dmg_as_root(
+    dmg_path: &str,
+    event: &PendingUpdateEvent,
+) -> ResultType<()> {
+    fn shell_quote(value: &str) -> String {
+        format!("'{}'", value.replace('\'', "'\"'\"'"))
+    }
+
+    let exe = std::env::current_exe()?;
+    let mut command = format!(
+        "{} --update-dmg-as-root {} {}",
+        shell_quote(&exe.to_string_lossy()),
+        shell_quote(dmg_path),
+        shell_quote(&event.version),
+    );
+    for arg in event.cli_args() {
+        command.push(' ');
+        command.push_str(&shell_quote(&arg));
+    }
+    let script = format!(
+        "do shell script {} with administrator privileges",
+        format!("\"{}\"", command.replace('\\', "\\\\").replace('"', "\\\""))
+    );
+    let status = Command::new("/usr/bin/osascript")
+        .args(["-e", &script])
+        .status()?;
+    if !status.success() {
+        bail!("administrator authorization or root update launch failed: {status}");
+    }
+    Ok(())
+}
+
 pub fn update_to(_file: &str) -> ResultType<()> {
     let update_temp_dir = get_update_temp_dir_string();
     update_extracted(&update_temp_dir)?;
@@ -987,7 +1150,10 @@ fn backup_update_plist(source: &str, backup: &str) -> ResultType<()> {
             Ok(())
         }
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
-            bail!("[root-update] required installed plist is missing: {}", source)
+            bail!(
+                "[root-update] required installed plist is missing: {}",
+                source
+            )
         }
         Err(err) => Err(err.into()),
     }
@@ -999,7 +1165,10 @@ fn validate_update_tree(path: &Path, framework_root: Option<&Path>) -> ResultTyp
         // Frameworks legitimately use internal symlinks (Resources,
         // Versions/Current), but never allow a link to leave its framework.
         let Some(framework_root) = framework_root else {
-            bail!("[root-update] symlink outside framework: {}", path.display());
+            bail!(
+                "[root-update] symlink outside framework: {}",
+                path.display()
+            );
         };
         let target = std::fs::read_link(path)?;
         let target = if target.is_absolute() {
@@ -1029,14 +1198,24 @@ fn validate_update_tree(path: &Path, framework_root: Option<&Path>) -> ResultTyp
             validate_update_tree(&child, child_framework_root)?;
         }
     } else if !metadata.file_type().is_file() {
-        bail!("[root-update] unsupported file in update bundle: {}", path.display());
+        bail!(
+            "[root-update] unsupported file in update bundle: {}",
+            path.display()
+        );
     }
     Ok(())
 }
 
 /// Performs a silent update from a DMG file without any osascript dialog.
 /// Must be called from a process running as root (e.g. the service binary).
-pub fn update_from_dmg_as_root(dmg_path: &str, expected_version: &str) -> ResultType<()> {
+pub fn update_from_dmg_as_root(
+    dmg_path: &str,
+    expected_version: &str,
+    event: &PendingUpdateEvent,
+) -> ResultType<()> {
+    // No O_CLOEXEC: the detached shell inherits this descriptor and keeps the
+    // flock for the complete swap/readiness/rollback transaction.
+    let _update_lock = acquire_root_update_lock()?;
     let app_name = crate::get_app_name();
     if app_name.is_empty()
         || !app_name
@@ -1060,10 +1239,19 @@ pub fn update_from_dmg_as_root(dmg_path: &str, expected_version: &str) -> Result
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(&tmp_dir, std::fs::Permissions::from_mode(0o700))?;
     }
-    let agent_plist = format!("/Library/LaunchAgents/com.carriez.{}_server.plist", app_name);
-    let daemon_plist = format!("/Library/LaunchDaemons/com.carriez.{}_service.plist", app_name);
+    let agent_plist = format!(
+        "/Library/LaunchAgents/com.carriez.{}_server.plist",
+        app_name
+    );
+    let daemon_plist = format!(
+        "/Library/LaunchDaemons/com.carriez.{}_service.plist",
+        app_name
+    );
 
-    log::info!("[root-update] Starting silent root update from {}", dmg_path);
+    log::info!(
+        "[root-update] Starting silent root update from {}",
+        dmg_path
+    );
     // Check sessions before extracting to avoid unnecessary work
     if !crate::updater::has_no_active_conns_ipc() {
         bail!("[root-update] Active session detected, deferring update.");
@@ -1161,7 +1349,10 @@ pub fn update_from_dmg_as_root(dmg_path: &str, expected_version: &str) -> Result
     // launching a freshly extracted service binary from /tmp is not required.
     let new_service = format!("{}/Contents/MacOS/service", src_app);
     if !std::path::Path::new(&new_service).is_file() {
-        bail!("[root-update] staged service binary is missing: {}", new_service);
+        bail!(
+            "[root-update] staged service binary is missing: {}",
+            new_service
+        );
     }
     // The new binary writes its own plist definitions after the bundle is
     // moved into its final root-owned location.  This avoids executing code
@@ -1199,6 +1390,25 @@ pub fn update_from_dmg_as_root(dmg_path: &str, expected_version: &str) -> Result
         r#"#!/bin/sh
 rollback_done=0
 bundle_swapped=0
+write_result() {{
+    result_status="$1"
+    result_tmp="{result_path}.{transaction_id}.tmp"
+    umask 077
+    set -C
+    {{
+        printf 'transaction_id=%s\n' '{transaction_id}'
+        printf 'status=%s\n' "$result_status"
+        printf 'from_version=%s\n' '{from_version}'
+        printf 'from_build_seq=%s\n' '{from_build_seq}'
+        printf 'to_version=%s\n' '{to_version}'
+        printf 'to_build_seq=%s\n' '{to_build_seq}'
+        printf 'source=%s\n' '{source}'
+    }} > "$result_tmp" && chmod 600 "$result_tmp" && mv -f "$result_tmp" "{result_path}"
+    result_status_code=$?
+    set +C
+    [ "$result_status_code" -eq 0 ] || rm -f "$result_tmp"
+    return "$result_status_code"
+}}
 bootstrap_agent() {{
     agent_uid="$1"
     if [ "$agent_uid" != "0" ]; then
@@ -1538,8 +1748,12 @@ rollback_transaction() {{
         restore_failed=1
     fi
     if [ "$restore_failed" -ne 0 ]; then
+        write_result rollback_failed || \
+            echo "[root-update] CRITICAL: failed to persist rollback_failed result" >> {tmp_dir}/rustdesk_root_update.log
         echo "[root-update] CRITICAL: rollback restoration failed" >> {tmp_dir}/rustdesk_root_update.log
     else
+        write_result rolled_back || \
+            echo "[root-update] CRITICAL: failed to persist rolled_back result" >> {tmp_dir}/rustdesk_root_update.log
         echo "[root-update] Rollback daemon and agents verified healthy" >> {tmp_dir}/rustdesk_root_update.log
     fi
 }}
@@ -1657,7 +1871,14 @@ if ! daemon_snapshot_stable || ! agent_snapshot_stable; then
     echo "[root-update] CRITICAL: daemon or agent stopped before commit, restoring" >> {tmp_dir}/rustdesk_root_update.log
     exit 1
 fi
-# Only remove backup after BOTH daemon AND agent confirmed running
+# Persist the terminal result before deleting the only rollback bundle. If the
+# durable state transition fails, EXIT still has enough data to restore.
+if ! write_result installed; then
+    echo "[root-update] CRITICAL: failed to persist installed result, restoring" >> {tmp_dir}/rustdesk_root_update.log
+    exit 1
+fi
+# Only remove backup after BOTH daemon AND agent confirmed running and the
+# terminal state is durable.
 rollback_done=1
 bundle_swapped=0
 if ! rm -rf "{app_bundle}.bak"; then
@@ -1680,6 +1901,13 @@ rm -rf {tmp_dir}
         agent_label = agent_label,
         daemon_plist_bak = daemon_plist_bak,
         agent_plist_bak = agent_plist_bak,
+        result_path = ROOT_UPDATE_RESULT_PATH,
+        transaction_id = event.transaction_id,
+        from_version = event.from_version,
+        from_build_seq = event.from_build_seq,
+        to_version = event.version,
+        to_build_seq = event.build_seq,
+        source = event.source.as_str(),
     );
 
     {
@@ -1716,6 +1944,11 @@ rm -rf {tmp_dir}
     if !crate::updater::has_no_active_conns_ipc() {
         bail!("[root-update] active session started before update launch");
     }
+    let pending_result = MacUpdateResult {
+        status: "pending".to_owned(),
+        event: event.clone(),
+    };
+    write_root_update_result(&pending_result)?;
     if let Err(err) = Command::new("/bin/bash")
         .arg(&script_path)
         .stdin(Stdio::null())
@@ -1724,6 +1957,7 @@ rm -rf {tmp_dir}
         .process_group(0)
         .spawn()
     {
+        let _ = std::fs::remove_file(ROOT_UPDATE_RESULT_PATH);
         return Err(err.into());
     }
 
@@ -1761,7 +1995,10 @@ fn extract_dmg(dmg_path: &str, target_dir: &str) -> ResultType<()> {
 fn extract_dmg_into_existing_dir(dmg_path: &str, target_dir: &str) -> ResultType<()> {
     let target_path = Path::new(target_dir);
     if !target_path.exists() {
-        bail!("[root-update] Temp directory does not exist: {:?}", target_path);
+        bail!(
+            "[root-update] Temp directory does not exist: {:?}",
+            target_path
+        );
     }
     extract_dmg_inner(dmg_path, target_dir)
 }

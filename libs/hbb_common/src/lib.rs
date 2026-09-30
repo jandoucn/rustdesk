@@ -225,6 +225,7 @@ pub fn get_version_from_url(url: &str) -> String {
 pub fn gen_version() {
     println!("cargo:rerun-if-changed=Cargo.toml");
     println!("cargo:rerun-if-changed=version.json");
+    println!("cargo:rerun-if-env-changed=RUSTDESK_EDITION");
     use std::fs::File;
     use std::io::prelude::*;
     let mut file = File::create("./src/version.rs").unwrap();
@@ -240,7 +241,8 @@ pub fn gen_version() {
     let build_seq = value("build_seq");
     file.write_all(format!("pub const VERSION: &str = \"{version}\";\n").as_bytes()).ok();
     file.write_all(format!("pub const PRODUCT: &str = \"{}\";\n", value("product")).as_bytes()).ok();
-    file.write_all(format!("pub const EDITION: &str = \"{}\";\n", value("edition")).as_bytes()).ok();
+    let edition = std::env::var("RUSTDESK_EDITION").unwrap_or_else(|_| value("edition"));
+    file.write_all(format!("pub const EDITION: &str = \"{edition}\";\n").as_bytes()).ok();
     file.write_all(format!("pub const BUILD_NUMBER: &str = \"{}\";\n", value("build_number")).as_bytes()).ok();
     file.write_all(format!("pub const BUILD_SEQ: u64 = {build_seq};\n").as_bytes()).ok();
     file.write_all(format!("pub const CHANNEL: &str = \"{}\";\n", value("channel")).as_bytes()).ok();
@@ -523,6 +525,10 @@ pub struct VersionCheckRequest {
     pub install_mode: String,
     #[serde(default)]
     pub source_commit: String,
+    #[serde(default)]
+    pub target_key: String,
+    #[serde(default)]
+    pub package_kind: String,
 }
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
@@ -726,5 +732,22 @@ mod test {
         assert!(is_newer_version("1.6.0", 1, "1.5.0", 999));
         assert!(!is_newer_version("1.5.0", 2026093001, "1.5.0", 2026093001));
         assert!(!is_newer_version("1.5.0", 1, "1.5.0", 2));
+    }
+
+    #[test]
+    fn version_check_request_serializes_exact_update_target() {
+        let request = VersionCheckRequest {
+            target_key: "windows-x86_64-msi-standard".to_owned(),
+            package_kind: "msi".to_owned(),
+            ..Default::default()
+        };
+        let value = serde_json::to_value(&request).expect("request should serialize");
+        assert_eq!(value["target_key"], "windows-x86_64-msi-standard");
+        assert_eq!(value["package_kind"], "msi");
+
+        let legacy: VersionCheckRequest =
+            serde_json::from_str("{}").expect("legacy request should deserialize");
+        assert!(legacy.target_key.is_empty());
+        assert!(legacy.package_kind.is_empty());
     }
 }

@@ -11,6 +11,10 @@ on:
         required: true
       ALIYUN_ACCESS_KEY_SECRET:
         required: true
+      UPDATE_SIGNING_KEY:
+        required: true
+      UPDATE_PUBLISH_TOKEN:
+        required: true
   workflow_dispatch:
     inputs:
       tag:
@@ -22,7 +26,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: oss-release-${{ inputs.tag }}
+  group: oss-stable-release
   cancel-in-progress: false
 
 jobs:
@@ -33,8 +37,19 @@ jobs:
       OSS_ENDPOINT: oss-cn-shanghai.aliyuncs.com
       OSS_PREFIX: rustdesk/stable
       RELEASE_TAG: ${{ inputs.tag }}
+      DOWNLOAD_BASE: https://download.yan.life
+      UPDATE_PUBLISH_URL: https://rdapi.yan.life/rd/update/v1/publish
+      UPDATE_MANIFEST_URL: https://rdapi.yan.life/rd/update/v1/manifest/stable.json
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout publisher
+        uses: actions/checkout@v4
+
+      - name: Checkout release source
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag }}
+          path: release-source
+          fetch-depth: 1
 
       - name: Download GitHub Release assets
         env:
@@ -42,134 +57,26 @@ jobs:
         run: |
           mkdir -p release-assets
           gh release download "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --dir release-assets
-          test -n "$(find release-assets -type f -maxdepth 1 -print -quit)"
-          python3 - <<'PY'
-          import pathlib
-          import re
-
-          names = sorted(path.name for path in pathlib.Path('release-assets').iterdir() if path.is_file())
-          expected = []
-          for edition in ('standard', 'sos'):
-              expected.extend((edition, pattern) for pattern in (
-                  rf'^rustdesk-[^-]+-{edition}-(?:aarch64|aarch64-aarch64)\.dmg$',
-                  rf'^rustdesk-[^-]+-{edition}-(?:android-aarch64|aarch64)\.apk$',
-                  rf'^rustdesk-[^-]+-{edition}-(?:windows-x86_64|x86_64)\.exe$',
-                  rf'^rustdesk-[^-]+-{edition}-(?:windows-x86_64|x86_64)\.msi$',
-              ))
-          missing = [f'{edition}: {pattern}' for edition, pattern in expected
-                     if not any(re.match(pattern, name) for name in names)]
-          if len(names) != 8 or missing:
-              raise SystemExit(f'Expected 8 standard/SOS release assets; names={names}, missing={missing}')
-          PY
+          test -n "$(find release-assets -maxdepth 1 -type f -print -quit)"
 
       - name: Install OSS publisher
-        run: python3 -m pip install --disable-pip-version-check oss2
+        run: python3 -m pip install --disable-pip-version-check oss2 pynacl
 
-      - name: Upload release assets and retain five versions
+      - name: Publish assets and update manifest
         env:
           ALIYUN_ACCESS_KEY_ID: ${{ secrets.ALIYUN_ACCESS_KEY_ID }}
           ALIYUN_ACCESS_KEY_SECRET: ${{ secrets.ALIYUN_ACCESS_KEY_SECRET }}
+          UPDATE_SIGNING_KEY: ${{ secrets.UPDATE_SIGNING_KEY }}
+          UPDATE_PUBLISH_TOKEN: ${{ secrets.UPDATE_PUBLISH_TOKEN }}
         run: |
-          python3 - <<'PY'
-          import hashlib
-          import json
-          import os
-          import pathlib
-          import re
-          import time
-          from concurrent.futures import ThreadPoolExecutor
-          import oss2
-          from oss2.exceptions import AccessDenied
-
-          bucket_name = os.environ['OSS_BUCKET']
-          endpoint = os.environ['OSS_ENDPOINT']
-          tag = os.environ['RELEASE_TAG']
-          prefix = os.environ['OSS_PREFIX']
-          key_id = os.environ.get('ALIYUN_ACCESS_KEY_ID', '')
-          key_secret = os.environ.get('ALIYUN_ACCESS_KEY_SECRET', '')
-          if not key_id or not key_secret:
-              raise SystemExit('Missing ALIYUN_ACCESS_KEY_ID/ALIYUN_ACCESS_KEY_SECRET')
-
-          auth = oss2.Auth(key_id, key_secret)
-          bucket = oss2.Bucket(auth, f'https://{endpoint}', bucket_name)
-          release_prefix = f'{prefix}/{tag}/'
-          try:
-              paths = sorted(path for path in pathlib.Path('release-assets').iterdir() if path.is_file())
-              def upload_asset(path):
-                  digest = hashlib.sha256(path.read_bytes()).hexdigest()
-                  object_key = release_prefix + path.name
-                  upload_bucket = oss2.Bucket(auth, f'https://{endpoint}', bucket_name)
-                  oss2.resumable_upload(
-                      upload_bucket,
-                      object_key,
-                      str(path),
-                      multipart_threshold=10 * 1024 * 1024,
-                      part_size=10 * 1024 * 1024,
-                      num_threads=2,
-                  )
-                  uploaded = upload_bucket.head_object(object_key)
-                  if uploaded.content_length != path.stat().st_size:
-                      raise SystemExit(f'OSS size mismatch for {object_key}')
-                  return {'name': path.name, 'key': object_key, 'size': path.stat().st_size, 'sha256': digest}
-              with ThreadPoolExecutor(max_workers=4) as executor:
-                  assets = list(executor.map(upload_asset, paths))
-
-              catalog = {
-                  'schema': 1,
-                  'tag': tag,
-                  'published_at': int(time.time()),
-                  'download_base': 'https://download.yan.life/',
-                  'assets': assets,
-              }
-              catalog_key = release_prefix + 'catalog.json'
-              bucket.put_object(catalog_key, json.dumps(catalog, ensure_ascii=False, separators=(',', ':')).encode())
-              bucket.head_object(catalog_key)
-
-              # Keep the newest five stable release prefixes. Do not delete beta objects.
-              stable_tag = re.compile(r'^yan-v(\d+)\.(\d+)\.(\d+)-build(\d{8})\.(\d+)$')
-              legacy_tag = re.compile(r'^(\d{8})-(\d+)$')
-              tags = set()
-              for obj in oss2.ObjectIterator(bucket, prefix=f'{prefix}/'):
-                  rest = obj.key[len(prefix) + 1:]
-                  if '/' in rest:
-                      candidate = rest.split('/', 1)[0]
-                      if stable_tag.fullmatch(candidate) or legacy_tag.fullmatch(candidate):
-                          tags.add(candidate)
-              def sort_key(value):
-                  match = stable_tag.fullmatch(value)
-                  if match:
-                      major, minor, patch, date, sequence = (int(part) for part in match.groups())
-                      return date, sequence, major, minor, patch
-                  date, sequence = (int(part) for part in legacy_tag.fullmatch(value).groups())
-                  return date, sequence, 0, 0, 0
-              for old_tag in sorted(tags, key=sort_key, reverse=True)[5:]:
-                  old_prefix = f'{prefix}/{old_tag}/'
-                  for obj in oss2.ObjectIterator(bucket, prefix=old_prefix):
-                      bucket.delete_object(obj.key)
-              print(json.dumps({'tag': tag, 'uploaded': len(assets), 'retained': 5}))
-          except AccessDenied as exc:
-              details = getattr(exc, 'details', {})
-              request_id = getattr(exc, 'request_id', None) or details.get('RequestId', 'unknown')
-              raise SystemExit(
-                  'OSS access denied. Grant the configured RAM identity '
-                  f'oss:PutObject/oss:GetObject/oss:DeleteObject on '
-                  f'acs:oss:*:*:{bucket_name}/{prefix}/* and oss:ListObjects on '
-                  f'acs:oss:*:*:{bucket_name}; '
-                  f'request-id={request_id}'
-              ) from exc
-          PY
-
-      - name: Probe public endpoint routing
-        run: |
-          status=000
-          for attempt in $(seq 1 10); do
-            status="$(curl --silent --output /dev/null --write-out '%{http_code}' --head \
-              "https://download.yan.life/${OSS_PREFIX}/${RELEASE_TAG}/catalog.json")"
-            if [ "$status" = 200 ]; then
-              break
-            fi
-            echo "Public catalog probe $attempt/10 returned HTTP $status"
-            sleep 6
-          done
-          echo "Public catalog HTTP status: $status"
-          test "$status" = 200
+          python3 .github/scripts/publish-release-to-oss.py \
+            --assets-dir release-assets \
+            --source-dir release-source \
+            --tag "$RELEASE_TAG" \
+            --repository "$GITHUB_REPOSITORY" \
+            --bucket "$OSS_BUCKET" \
+            --endpoint "$OSS_ENDPOINT" \
+            --prefix "$OSS_PREFIX" \
+            --download-base "$DOWNLOAD_BASE" \
+            --publish-url "$UPDATE_PUBLISH_URL" \
+            --stable-manifest-url "$UPDATE_MANIFEST_URL"

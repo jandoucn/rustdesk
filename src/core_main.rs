@@ -233,19 +233,49 @@ pub fn core_main() -> Option<Vec<String>> {
                     return None;
                 }
 
-                let text = match crate::platform::prepare_custom_client_update() {
+                let pending_event = base::update::PendingUpdateEvent::from_cli_args(&args);
+                let mut failure_status = "failed";
+                let update_result = match crate::platform::prepare_custom_client_update() {
                     Err(e) => {
                         log::error!("Error preparing custom client update: {}", e);
+                        Err(e)
+                    }
+                    Ok(false) => Err(hbb_common::anyhow::anyhow!(
+                        "custom client update preparation failed"
+                    )),
+                    Ok(true) => platform::update_me(false).map_err(|err| {
+                        let message = err.to_string();
+                        failure_status = if message.contains("[update-rolled-back]") {
+                            "rolled_back"
+                        } else if message.contains("[update-rollback-failed]") {
+                            "rollback_failed"
+                        } else {
+                            "failed"
+                        };
+                        err
+                    }),
+                };
+                if let Some(event) = pending_event {
+                    let status = if update_result.is_ok() {
+                        "installed"
+                    } else {
+                        failure_status
+                    };
+                    crate::updater::report_update_event_with_origin(
+                        status,
+                        &event.from_version,
+                        event.from_build_seq,
+                        &event.version,
+                        event.build_seq,
+                        event.source.as_str(),
+                    );
+                }
+                let text = match update_result {
+                    Ok(_) => "Updated successfully!".to_string(),
+                    Err(err) => {
+                        log::error!("Failed with error: {err}");
                         "Update failed!".to_string()
                     }
-                    Ok(false) => "Update failed!".to_string(),
-                    Ok(true) => match platform::update_me(false) {
-                        Ok(_) => "Updated successfully!".to_string(),
-                        Err(err) => {
-                            log::error!("Failed with error: {err}");
-                            "Update failed!".to_string()
-                        }
-                    },
                 };
                 Toast::new(Toast::POWERSHELL_APP_ID)
                     .title(&config::APP_NAME.read().unwrap())
@@ -339,7 +369,23 @@ pub fn core_main() -> Option<Vec<String>> {
         #[cfg(target_os = "macos")]
         {
             use crate::platform;
-            if args[0] == "--update" {
+            if args[0] == "--update-dmg-as-root" {
+                let pending_event = base::update::PendingUpdateEvent::from_cli_args(&args);
+                let result = if !is_root() {
+                    Err(hbb_common::anyhow::anyhow!("root update requires root"))
+                } else if args.len() < 3 {
+                    Err(hbb_common::anyhow::anyhow!("root update arguments are incomplete"))
+                } else if let Some(event) = pending_event {
+                    platform::update_from_dmg_as_root(&args[1], &args[2], &event)
+                } else {
+                    Err(hbb_common::anyhow::anyhow!("root update event is invalid"))
+                };
+                if let Err(err) = result {
+                    log::error!("Failed to launch root DMG update: {err}");
+                    std::process::exit(1);
+                }
+                return None;
+            } else if args[0] == "--update" {
                 if args.len() > 1 && args[1].ends_with(".dmg") {
                     // Version check is unnecessary unless downgrading to an older version
                     // that lacks "update dmg" support. This is a special case since we cannot

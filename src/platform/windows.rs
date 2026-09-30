@@ -1488,6 +1488,68 @@ pub fn copy_exe_cmd(src_exe: &str, exe: &str, path: &str) -> ResultType<String> 
     ))
 }
 
+const UPDATE_ROLLED_BACK_EXIT_CODE: u32 = 0x5253_0009;
+const UPDATE_ROLLBACK_FAILED_EXIT_CODE: u32 = 0x5253_000A;
+const UPDATE_BACKUP_FAILED_EXIT_CODE: u32 = 0x5253_000B;
+
+fn update_transaction_commands(
+    src_exe: &str,
+    exe: &str,
+    path: &str,
+    backup_path: &str,
+    restore_service_cmd: &str,
+) -> ResultType<String> {
+    let copy_main = copy_raw_cmd(src_exe, exe, path)?.replace(" /C ", " ");
+    let copy_broker = format!(
+        "copy /Y \"{}\" \"{}\\{}\"",
+        win_topmost_window::ORIGIN_PROCESS_EXE,
+        path,
+        win_topmost_window::INJECTED_PROCESS_EXE
+    );
+    let rename_commands = rename_exe_cmd(src_exe, path)?;
+    Ok(format!(
+        r#"
+if exist "{backup_path}" goto update_backup_failed
+md "{backup_path}" || goto update_backup_failed
+robocopy "{path}" "{backup_path}" /MIR /COPY:DAT /DCOPY:DAT /R:1 /W:1 > nul
+if errorlevel 8 goto update_backup_failed
+{copy_main}
+if errorlevel 1 goto update_rollback
+{copy_broker}
+if errorlevel 1 goto update_rollback
+{rename_commands}
+if errorlevel 1 goto update_rollback
+goto update_commit
+:update_rollback
+robocopy "{backup_path}" "{path}" /MIR /COPY:DAT /DCOPY:DAT /R:1 /W:1 > nul
+if errorlevel 8 goto update_rollback_failed
+rd /s /q "{backup_path}"
+{restore_service_cmd}
+exit /b {UPDATE_ROLLED_BACK_EXIT_CODE}
+:update_rollback_failed
+{restore_service_cmd}
+exit /b {UPDATE_ROLLBACK_FAILED_EXIT_CODE}
+:update_backup_failed
+rd /s /q "{backup_path}" > nul 2>&1
+{restore_service_cmd}
+exit /b {UPDATE_BACKUP_FAILED_EXIT_CODE}
+:update_commit
+rd /s /q "{backup_path}"
+"#
+    ))
+}
+
+fn annotate_update_install_error(err: hbb_common::anyhow::Error) -> hbb_common::anyhow::Error {
+    let message = err.to_string();
+    if message.contains(&UPDATE_ROLLED_BACK_EXIT_CODE.to_string()) {
+        anyhow!("[update-rolled-back] {message}")
+    } else if message.contains(&UPDATE_ROLLBACK_FAILED_EXIT_CODE.to_string()) {
+        anyhow!("[update-rollback-failed] {message}")
+    } else {
+        anyhow!("[update-install-failed] {message}")
+    }
+}
+
 #[inline]
 pub fn rename_exe_cmd(src_exe: &str, path: &str) -> ResultType<String> {
     let src_exe_filename = PathBuf::from(src_exe)
@@ -3521,6 +3583,9 @@ reg add {subkey} /f /v EstimatedSize /t REG_DWORD /d {size}
     } else {
         "".to_owned()
     };
+    let backup_path = format!("{path}.update-backup-{}", uuid::Uuid::new_v4().simple());
+    let update_transaction =
+        update_transaction_commands(&src_exe, &exe, &path, &backup_path, &restore_service_cmd)?;
 
     // No need to check the install option here, `is_rd_printer_installed` rarely fails.
     let is_printer_installed = remote_printer::is_rd_printer_installed(&app_name).unwrap_or(false);
@@ -3551,9 +3616,8 @@ reg add {subkey} /f /v EstimatedSize /t REG_DWORD /d {size}
 chcp 65001
 sc stop {app_name}
 taskkill /F /IM {app_name}.exe{filter}
+{update_transaction}
 {reg_cmd}
-{copy_exe}
-{rename_exe}
 {remove_meta_toml}
 {restore_service_cmd}
 {uninstall_printer_cmd}
@@ -3561,8 +3625,6 @@ taskkill /F /IM {app_name}.exe{filter}
 {sleep}
     ",
         app_name = app_name,
-        copy_exe = copy_exe_cmd(&src_exe, &exe, &path)?,
-        rename_exe = rename_exe_cmd(&src_exe, &path)?,
         remove_meta_toml = remove_meta_toml_cmd(is_msi.unwrap_or(true), &path),
         sleep = if debug { "timeout 300" } else { "" },
     );
@@ -3624,7 +3686,7 @@ taskkill /F /IM {app_name}.exe{filter}
         }),
     };
 
-    run_cmds(cmds, debug, "update")?;
+    run_cmds(cmds, debug, "update").map_err(annotate_update_install_error)?;
 
     std::thread::sleep(std::time::Duration::from_millis(2000));
     log::info!("Update completed.");
@@ -4851,6 +4913,30 @@ mod tests {
                 "unsafe application name was accepted: {app_name}"
             );
         }
+    }
+
+    #[test]
+    fn update_transaction_commands_backup_and_restore_install_directory() {
+        let commands = update_transaction_commands(
+            r"C:\staging\RustDesk.exe",
+            r"C:\Program Files\RustDesk\RustDesk.exe",
+            r"C:\Program Files\RustDesk",
+            r"C:\Program Files\RustDesk.update-backup-test",
+            "sc start RustDesk",
+        )
+        .expect("transaction commands should be generated");
+
+        assert!(commands.contains(
+            "robocopy \"C:\\Program Files\\RustDesk\" \"C:\\Program Files\\RustDesk.update-backup-test\" /MIR"
+        ));
+        assert!(commands.contains("if errorlevel 1 goto update_rollback"));
+        assert!(commands.contains(
+            "robocopy \"C:\\Program Files\\RustDesk.update-backup-test\" \"C:\\Program Files\\RustDesk\" /MIR"
+        ));
+        assert!(commands.contains(&format!("exit /b {UPDATE_ROLLED_BACK_EXIT_CODE}")));
+        assert!(commands.contains(&format!("exit /b {UPDATE_ROLLBACK_FAILED_EXIT_CODE}")));
+        assert_eq!(commands.matches("sc start RustDesk").count(), 3);
+        assert!(!commands.contains(" /C "));
     }
 
     #[test]

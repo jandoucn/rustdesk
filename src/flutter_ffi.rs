@@ -2775,6 +2775,12 @@ pub fn main_get_common_sync(key: String) -> SyncReturn<String> {
 }
 
 pub fn main_set_common(_key: String, _value: String) {
+    if _key == "install-verified-update" {
+        if let Err(err) = crate::updater::manually_check_update() {
+            log::error!("Failed to request verified update: {}", err);
+        }
+        return;
+    }
     #[cfg(target_os = "windows")]
     if _key == "install-printer" && crate::platform::is_win_10_or_greater() {
         std::thread::spawn(move || {

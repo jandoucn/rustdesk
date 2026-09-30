@@ -719,3 +719,4 @@ extension WindowsTargetExt on int {
 }
 
 const kCheckSoftwareUpdateFinish = 'check_software_update_finish';
+const kSoftwareUpdateEvent = 'software_update_event';

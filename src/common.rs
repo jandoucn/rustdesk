@@ -8,7 +8,7 @@ use std::{
 
 use serde_json::{json, Map, Value};
 
-use base::{config::keys, message_proto::*};
+use base::{config::keys, message_proto::*, update::validate_manifest_contract};
 #[cfg(not(target_os = "ios"))]
 use hbb_common::whoami;
 use hbb_common::{
@@ -94,6 +94,7 @@ pub mod input {
 lazy_static::lazy_static! {
     pub static ref SOFTWARE_UPDATE_URL: Arc<Mutex<String>> = Default::default();
     pub static ref SOFTWARE_UPDATE_RESPONSE: Arc<Mutex<Option<hbb_common::VersionCheckResponse>>> = Default::default();
+    pub static ref SOFTWARE_UPDATE_TARGET_KEY: Arc<Mutex<String>> = Default::default();
     pub static ref LAST_UPDATE_CHECK: Arc<Mutex<Option<String>>> = Default::default();
     pub static ref DEVICE_ID: Arc<Mutex<String>> = Default::default();
     pub static ref DEVICE_NAME: Arc<Mutex<String>> = Default::default();
@@ -1149,8 +1150,23 @@ pub fn check_software_update() {
 // with the existing HTTP client and proxy configuration.
 #[tokio::main(flavor = "current_thread")]
 pub async fn do_check_software_update() -> hbb_common::ResultType<()> {
+    *SOFTWARE_UPDATE_URL.lock().unwrap() = String::new();
+    *SOFTWARE_UPDATE_RESPONSE.lock().unwrap() = None;
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+    SOFTWARE_UPDATE_TARGET_KEY.lock().unwrap().clear();
+    #[cfg(feature = "flutter")]
+    {
+        let mut event = HashMap::new();
+        event.insert("name", "check_software_update_finish");
+        event.insert("url", "");
+        if let Ok(data) = serde_json::to_string(&event) {
+            let _ = crate::flutter::push_global_event(crate::flutter::APP_TYPE_MAIN, data);
+        }
+    }
     let (mut request, url) =
         hbb_common::version_check_request(hbb_common::VER_TYPE_RUSTDESK_CLIENT.to_string());
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+    let (target_key, package_kind) = crate::updater::current_update_target()?;
     request.product = crate::PRODUCT.to_owned();
     request.edition = crate::EDITION.to_owned();
     request.version = crate::VERSION.to_owned();
@@ -1160,8 +1176,23 @@ pub async fn do_check_software_update() -> hbb_common::ResultType<()> {
     request.source_commit = crate::SOURCE_COMMIT.to_owned();
     request.platform = std::env::consts::OS.to_owned();
     request.arch = std::env::consts::ARCH.to_owned();
-    request.distribution = "installed".to_owned();
-    request.install_mode = "installed".to_owned();
+    request.distribution = if option_env!("RUSTDESK_SOS") == Some("1") {
+        "sos"
+    } else {
+        "desktop"
+    }
+    .to_owned();
+    request.install_mode = if std::env::var(PORTABLE_APPNAME_RUNTIME_ENV_KEY).is_ok() {
+        "portable"
+    } else {
+        "installed"
+    }
+    .to_owned();
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+    {
+        request.target_key = target_key.clone();
+        request.package_kind = package_kind;
+    }
     request.client_id = crate::get_app_name();
     request.client_uuid = hex::encode(&request.device_id);
     let proxy_conf = Config::get_socks();
@@ -1187,24 +1218,56 @@ pub async fn do_check_software_update() -> hbb_common::ResultType<()> {
             }
         }
     };
-    let bytes = latest_release_response.bytes().await?;
+    let bytes = latest_release_response.error_for_status()?.bytes().await?;
     let resp: hbb_common::VersionCheckResponse = serde_json::from_slice(&bytes)?;
     *LAST_UPDATE_CHECK.lock().unwrap() = Some(chrono::Utc::now().to_rfc3339());
+    if !resp.update_available || resp.mode == "disabled" {
+        *SOFTWARE_UPDATE_RESPONSE.lock().unwrap() = Some(resp);
+        return Ok(());
+    }
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+    {
+        let manifest = resp
+            .manifest
+            .as_ref()
+            .ok_or_else(|| anyhow!("update response is missing manifest"))?;
+        validate_manifest_contract(
+            &resp,
+            manifest,
+            crate::VERSION,
+            crate::BUILD_SEQ,
+            crate::PRODUCT,
+            crate::EDITION,
+            crate::CHANNEL,
+            &target_key,
+        )?;
+    }
     #[cfg(not(any(target_os = "android", target_os = "ios")))]
     let response_url = resp
         .manifest
         .as_ref()
         .and_then(|manifest| {
-            let key = crate::updater::current_update_target_key();
-            manifest.targets.get(&key).map(|target| target.primary.clone())
+            manifest
+                .targets
+                .get(&target_key)
+                .map(|target| target.primary.clone())
         })
         .filter(|url| !url.is_empty())
         .unwrap_or_else(|| resp.url.clone());
     #[cfg(any(target_os = "android", target_os = "ios"))]
     let response_url = resp.url.clone();
-    let is_newer = resp.update_available && hbb_common::is_newer_version(
-        &resp.target_version, resp.target_build_seq, crate::VERSION, crate::BUILD_SEQ);
+    let is_newer = resp.update_available
+        && hbb_common::is_newer_version(
+            &resp.target_version,
+            resp.target_build_seq,
+            crate::VERSION,
+            crate::BUILD_SEQ,
+        );
     if is_newer {
+        #[cfg(not(any(target_os = "android", target_os = "ios")))]
+        {
+            *SOFTWARE_UPDATE_TARGET_KEY.lock().unwrap() = target_key;
+        }
         #[cfg(feature = "flutter")]
         {
             let mut m = HashMap::new();
@@ -1217,6 +1280,8 @@ pub async fn do_check_software_update() -> hbb_common::ResultType<()> {
         *SOFTWARE_UPDATE_URL.lock().unwrap() = response_url;
         *SOFTWARE_UPDATE_RESPONSE.lock().unwrap() = Some(resp);
     } else {
+        #[cfg(not(any(target_os = "android", target_os = "ios")))]
+        SOFTWARE_UPDATE_TARGET_KEY.lock().unwrap().clear();
         *SOFTWARE_UPDATE_URL.lock().unwrap() = "".to_string();
         *SOFTWARE_UPDATE_RESPONSE.lock().unwrap() = Some(resp);
     }

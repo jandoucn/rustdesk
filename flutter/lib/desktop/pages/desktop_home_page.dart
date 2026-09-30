@@ -438,17 +438,18 @@ isSosMode
   }
 
   Widget buildHelpCards(String updateUrl) {
-    if (!bind.isCustomClient() &&
-        updateUrl.isNotEmpty &&
-        !isCardClosed &&
-        bind.mainUriPrefixSync().contains('rustdesk')) {
+    if (updateUrl.isNotEmpty && !isCardClosed) {
       final isToUpdate = (isWindows || isMacOS) && bind.mainIsInstalled();
-      String btnText = isToUpdate ? 'Update' : 'Download';
+      final isUpdating = isVerifiedUpdateBusy(stateGlobal.updateStatus.value);
+      final isDownloaded = stateGlobal.updateStatus.value == 'downloaded';
+      String btnText = isUpdating
+          ? 'Updating...'
+          : (isDownloaded ? 'Install' : (isToUpdate ? 'Update' : 'Download'));
       GestureTapCallback onPressed = () async {
         final Uri url = Uri.parse('https://rustdesk.com/download');
         await launchUrl(url);
       };
-      if (isToUpdate) {
+      if (isToUpdate && !isUpdating) {
         onPressed = () {
           handleUpdate(updateUrl);
         };
