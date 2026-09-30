@@ -46,6 +46,11 @@ class ReleaseAndRemoteUiContractTest(unittest.TestCase):
         self.assertIn("group: flutter-tag-release", caller)
         self.assertIn("cancel-in-progress: false", caller)
         self.assertIn("if: inputs.standard && inputs.sos && inputs.platforms == 'all'", caller)
+        self.assertIn("if: always() && needs.release-tag.result == 'success'", caller)
+        self.assertIn("needs.run-flutter-tag-build.result == 'failure'", caller)
+        self.assertIn("needs.run-flutter-tag-build.result == 'cancelled'", caller)
+        self.assertIn('if [ "$asset_count" -ne 0 ]; then', caller)
+        self.assertIn('gh api --method DELETE "repos/$GITHUB_REPOSITORY/git/refs/tags/$RELEASE_TAG"', caller)
         self.assertIn('expected_tag="${tag_base}-${sequence}"', caller)
         self.assertIn('if [ "$CUSTOM_TAG" != "$expected_tag" ]; then', caller)
 

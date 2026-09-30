@@ -101,3 +101,30 @@ jobs:
     secrets: inherit
     with:
       tag: ${{ inputs.tag != '' && inputs.tag || needs.release-tag.outputs.tag }}
+
+  cleanup-empty-release:
+    needs: [release-tag, run-flutter-tag-build]
+    if: always() && needs.release-tag.result == 'success' && (needs.run-flutter-tag-build.result == 'failure' || needs.run-flutter-tag-build.result == 'cancelled')
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      RELEASE_TAG: ${{ inputs.tag != '' && inputs.tag || needs.release-tag.outputs.tag }}
+    steps:
+      - name: 删除没有安装包的 Release 和 tag
+        shell: bash
+        run: |
+          set -euo pipefail
+          if gh api "repos/$GITHUB_REPOSITORY/releases/tags/$RELEASE_TAG" > release.json 2>/dev/null; then
+            asset_count=$(jq '.assets | length' release.json)
+            if [ "$asset_count" -ne 0 ]; then
+              echo "Release $RELEASE_TAG contains $asset_count assets; preserving it."
+              exit 0
+            fi
+            gh release delete "$RELEASE_TAG" --cleanup-tag --yes
+            exit 0
+          fi
+          if gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$RELEASE_TAG" >/dev/null 2>&1; then
+            gh api --method DELETE "repos/$GITHUB_REPOSITORY/git/refs/tags/$RELEASE_TAG"
+          fi
