@@ -69,6 +69,10 @@ class MacosReleaseAppPathTest(unittest.TestCase):
             "rustdesk-${{ env.VERSION }}-${{ env.EDITION }}-macos",
             workflow,
         )
+        self.assertIn(
+            "env.UPLOAD_ARTIFACT == 'true' && (env.MACOS_P12_BASE64 == null || env.MACOS_P12_BASE64 == '')",
+            workflow,
+        )
         self.assertIn(app_name, build_script)
         self.assertIn(app_name, workflow)
         tree = ast.parse(build_script)

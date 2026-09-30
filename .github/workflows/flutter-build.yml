@@ -952,7 +952,7 @@ jobs:
           esac
 
       - name: create unsigned dmg
-        if: env.UPLOAD_ARTIFACT == 'true'
+        if: env.UPLOAD_ARTIFACT == 'true' && (env.MACOS_P12_BASE64 == null || env.MACOS_P12_BASE64 == '')
         run: |
           CREATE_DMG="$(command -v create-dmg)"
           CREATE_DMG="$(readlink -f "$CREATE_DMG")"
@@ -961,7 +961,7 @@ jobs:
           create-dmg --icon "RustDesk Yan.app" 200 190 --hide-extension "RustDesk Yan.app" --window-size 800 400 --app-drop-link 600 185 rustdesk-${{ env.VERSION }}-${{ env.EDITION }}-${{ matrix.job.arch }}.dmg "$app"
 
       - name: Upload unsigned macOS app
-        if: env.UPLOAD_ARTIFACT == 'true'
+        if: env.UPLOAD_ARTIFACT == 'true' && (env.MACOS_P12_BASE64 == null || env.MACOS_P12_BASE64 == '')
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: rustdesk-unsigned-macos-${{ matrix.job.arch }}
