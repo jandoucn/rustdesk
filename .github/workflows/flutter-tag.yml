@@ -65,3 +65,10 @@ jobs:
       upload-tag: ${{ inputs.tag != '' && inputs.tag || needs.release-tag.outputs.tag }}
       edition: ${{ matrix.edition }}
       platforms: ${{ inputs.platforms }}
+
+  publish-oss:
+    needs: [release-tag, run-flutter-tag-build]
+    uses: ./.github/workflows/publish-oss.yml
+    secrets: inherit
+    with:
+      tag: ${{ inputs.tag != '' && inputs.tag || needs.release-tag.outputs.tag }}

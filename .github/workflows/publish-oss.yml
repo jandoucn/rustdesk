@@ -1,0 +1,135 @@
+name: Publish release assets to Aliyun OSS
+
+on:
+  workflow_call:
+    inputs:
+      tag:
+        required: true
+        type: string
+    secrets:
+      ALIYUN_ACCESS_KEY_ID:
+        required: true
+      ALIYUN_ACCESS_KEY_SECRET:
+        required: true
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: GitHub release tag to publish
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: oss-release-${{ inputs.tag }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    env:
+      OSS_BUCKET: rustdesk-release
+      OSS_ENDPOINT: oss-cn-shanghai.aliyuncs.com
+      OSS_PREFIX: rustdesk/stable
+      RELEASE_TAG: ${{ inputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download GitHub Release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p release-assets
+          gh release download "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --dir release-assets
+          test -n "$(find release-assets -type f -maxdepth 1 -print -quit)"
+
+      - name: Install OSS publisher
+        run: python3 -m pip install --disable-pip-version-check oss2
+
+      - name: Upload release assets and retain five versions
+        env:
+          ALIYUN_ACCESS_KEY_ID: ${{ secrets.ALIYUN_ACCESS_KEY_ID }}
+          ALIYUN_ACCESS_KEY_SECRET: ${{ secrets.ALIYUN_ACCESS_KEY_SECRET }}
+        run: |
+          python3 - <<'PY'
+          import hashlib
+          import json
+          import os
+          import pathlib
+          import re
+          import time
+          import oss2
+
+          bucket_name = os.environ['OSS_BUCKET']
+          endpoint = os.environ['OSS_ENDPOINT']
+          tag = os.environ['RELEASE_TAG']
+          prefix = os.environ['OSS_PREFIX']
+          key_id = os.environ.get('ALIYUN_ACCESS_KEY_ID', '')
+          key_secret = os.environ.get('ALIYUN_ACCESS_KEY_SECRET', '')
+          if not key_id or not key_secret:
+              raise SystemExit('Missing ALIYUN_ACCESS_KEY_ID/ALIYUN_ACCESS_KEY_SECRET')
+
+          auth = oss2.Auth(key_id, key_secret)
+          bucket = oss2.Bucket(auth, f'https://{endpoint}', bucket_name)
+          release_prefix = f'{prefix}/{tag}/'
+          assets = []
+          for path in sorted(pathlib.Path('release-assets').iterdir()):
+              if not path.is_file():
+                  continue
+              digest = hashlib.sha256(path.read_bytes()).hexdigest()
+              object_key = release_prefix + path.name
+              oss2.resumable_upload(
+                  bucket,
+                  object_key,
+                  str(path),
+                  multipart_threshold=10 * 1024 * 1024,
+                  part_size=10 * 1024 * 1024,
+                  num_threads=4,
+              )
+              uploaded = bucket.head_object(object_key)
+              if uploaded.content_length != path.stat().st_size:
+                  raise SystemExit(f'OSS size mismatch for {object_key}')
+              assets.append({'name': path.name, 'key': object_key, 'size': path.stat().st_size, 'sha256': digest})
+
+          catalog = {
+              'schema': 1,
+              'tag': tag,
+              'published_at': int(time.time()),
+              'download_base': 'https://download.yan.life/',
+              'assets': assets,
+          }
+          catalog_key = release_prefix + 'catalog.json'
+          bucket.put_object(catalog_key, json.dumps(catalog, ensure_ascii=False, separators=(',', ':')).encode())
+          bucket.head_object(catalog_key)
+
+          # Keep the newest five stable release prefixes. Do not delete beta objects.
+          tags = set()
+          for obj in oss2.ObjectIterator(bucket, prefix=f'{prefix}/'):
+              rest = obj.key[len(prefix) + 1:]
+              if '/' in rest:
+                  tags.add(rest.split('/', 1)[0])
+          def sort_key(value):
+              match = re.search(r'build(\d+)', value)
+              return (int(match.group(1)) if match else 0, value)
+          for old_tag in sorted(tags, key=sort_key, reverse=True)[5:]:
+              old_prefix = f'{prefix}/{old_tag}/'
+              for obj in oss2.ObjectIterator(bucket, prefix=old_prefix):
+                  bucket.delete_object(obj.key)
+          print(json.dumps({'tag': tag, 'uploaded': len(assets), 'retained': 5}))
+          PY
+
+      - name: Probe public endpoint routing
+        run: |
+          status=000
+          for attempt in $(seq 1 10); do
+            status="$(curl --silent --output /dev/null --write-out '%{http_code}' --head \
+              "https://download.yan.life/${OSS_PREFIX}/${RELEASE_TAG}/catalog.json")"
+            if [ "$status" = 200 ]; then
+              break
+            fi
+            echo "Public catalog probe $attempt/10 returned HTTP $status"
+            sleep 6
+          done
+          echo "Public catalog HTTP status: $status"
+          test "$status" = 200
