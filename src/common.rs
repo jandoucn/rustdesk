@@ -20,7 +20,7 @@ use hbb_common::{
     config::{self, use_ws, Config, LocalConfig, CONNECT_TIMEOUT, READ_TIMEOUT, RENDEZVOUS_PORT},
     futures::future::join_all,
     futures_util::future::poll_fn,
-    get_version_number, log,
+    log,
     protobuf::{Enum, Message as _},
     rendezvous_proto::*,
     socket_client,
@@ -1190,12 +1190,18 @@ pub async fn do_check_software_update() -> hbb_common::ResultType<()> {
     let bytes = latest_release_response.bytes().await?;
     let resp: hbb_common::VersionCheckResponse = serde_json::from_slice(&bytes)?;
     *LAST_UPDATE_CHECK.lock().unwrap() = Some(chrono::Utc::now().to_rfc3339());
-    let response_url = resp.manifest.as_ref().and_then(|m| {
-        #[cfg(not(any(target_os = "android", target_os = "ios")))]
-        { let key = crate::updater::current_update_target_key(); m.targets.get(&key).map(|t| t.primary.clone()) }
-        #[cfg(any(target_os = "android", target_os = "ios"))]
-        { None }
-    }).filter(|u| !u.is_empty()).unwrap_or_else(|| resp.url.clone());
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+    let response_url = resp
+        .manifest
+        .as_ref()
+        .and_then(|manifest| {
+            let key = crate::updater::current_update_target_key();
+            manifest.targets.get(&key).map(|target| target.primary.clone())
+        })
+        .filter(|url| !url.is_empty())
+        .unwrap_or_else(|| resp.url.clone());
+    #[cfg(any(target_os = "android", target_os = "ios"))]
+    let response_url = resp.url.clone();
     let is_newer = resp.update_available && hbb_common::is_newer_version(
         &resp.target_version, resp.target_build_seq, crate::VERSION, crate::BUILD_SEQ);
     if is_newer {

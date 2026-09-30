@@ -284,7 +284,7 @@ fn decode_signature_value(value: &str) -> ResultType<Vec<u8>> {
     STANDARD
         .decode(value)
         .or_else(|_| URL_SAFE_NO_PAD.decode(value))
-        .map_err(|e| anyhow::anyhow!("invalid update signature encoding: {e}"))
+        .map_err(|e| hbb_common::anyhow::anyhow!("invalid update signature encoding: {e}"))
 }
 
 fn verify_update_signature(data: &[u8], target: &hbb_common::UpdateTarget) -> ResultType<()> {
@@ -304,7 +304,7 @@ fn verify_update_signature(data: &[u8], target: &hbb_common::UpdateTarget) -> Re
         .keys
         .into_iter()
         .find(|key| key.id == target.signature_key_id)
-        .ok_or_else(|| anyhow::anyhow!("update signing key not found"))?;
+        .ok_or_else(|| hbb_common::anyhow::anyhow!("update signing key not found"))?;
     if !key.key_type.is_empty() && key.key_type != "ed25519" {
         bail!("unsupported update signature type: {}", key.key_type);
     }
@@ -315,9 +315,9 @@ fn verify_update_signature(data: &[u8], target: &hbb_common::UpdateTarget) -> Re
 
 fn verify_detached_signature(data: &[u8], signature: &[u8], public_key: &[u8]) -> ResultType<()> {
     let public_key = hbb_common::sodiumoxide::crypto::sign::PublicKey::from_slice(&public_key)
-        .ok_or_else(|| anyhow::anyhow!("invalid update public key"))?;
-    let signature = hbb_common::sodiumoxide::crypto::sign::Signature::from_slice(&signature)
-        .ok_or_else(|| anyhow::anyhow!("invalid update signature"))?;
+        .ok_or_else(|| hbb_common::anyhow::anyhow!("invalid update public key"))?;
+    let signature = hbb_common::sodiumoxide::crypto::sign::Signature::from_bytes(signature)
+        .map_err(|_| hbb_common::anyhow::anyhow!("invalid update signature"))?;
     if !hbb_common::sodiumoxide::crypto::sign::verify_detached(&signature, data, &public_key) {
         bail!("update signature verification failed");
     }
