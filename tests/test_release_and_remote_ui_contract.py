@@ -78,6 +78,16 @@ class ReleaseAndRemoteUiContractTest(unittest.TestCase):
         update_card = desktop[desktop.index("Widget buildHelpCards") : desktop.index("if (systemError", desktop.index("Widget buildHelpCards"))]
         self.assertNotIn("mainUriPrefixSync().contains('rustdesk')", update_card)
 
+    def test_verified_update_command_is_desktop_only(self):
+        source = (ROOT / "src/flutter_ffi.rs").read_text()
+        command = source[source.index('if _key == "install-verified-update"') - 100 :]
+        command = command[: command.index("return;", command.index("manually_check_update"))]
+
+        self.assertIn(
+            '#[cfg(not(any(target_os = "android", target_os = "ios")))]',
+            command,
+        )
+
     def test_removed_remote_actions_do_not_reappear(self):
         desktop = (ROOT / "flutter/lib/desktop/widgets/remote_toolbar.dart").read_text()
         mobile = (ROOT / "flutter/lib/mobile/pages/remote_page.dart").read_text()
