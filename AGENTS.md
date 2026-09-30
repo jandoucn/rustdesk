@@ -5,6 +5,7 @@
 - 永远不创建或切换功能分支。
 - 所有提交直接在默认主分支 `master` 上完成。
 - 允许推送时只推送 `origin/master`；不得推送其他分支。
+- 版本发布可以正常创建版本 tag；Release action 和 ACR workflow 按项目配置通过 tag 触发。
 
 ## 定制仓库
 
