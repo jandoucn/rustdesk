@@ -35,17 +35,13 @@ jobs:
       - id: date
         env:
           CUSTOM_TAG: ${{ inputs.tag }}
-          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           version=$(python3 -c 'import json; print(json.load(open("version.json"))["version"])')
           build_number=$(python3 -c 'import json; print(json.load(open("version.json"))["build_number"])')
-          channel=$(python3 -c 'import json; print(json.load(open("version.json"))["channel"])')
           base="yan-v${version}"
           if [ "$CUSTOM_TAG" != "" ]; then
             tag="$CUSTOM_TAG"
-          elif [ "$channel" = "stable" ] && ! gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${base}" >/dev/null 2>&1; then
-            tag="$base"
           else
             tag="${base}-build${build_number}"
           fi

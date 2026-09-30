@@ -51,10 +51,10 @@ jobs:
           expected = []
           for edition in ('standard', 'sos'):
               expected.extend((edition, pattern) for pattern in (
-                  rf'^rustdesk-[^-]+-{edition}-aarch64\.dmg$',
-                  rf'^rustdesk-[^-]+-{edition}-android-aarch64\.apk$',
-                  rf'^rustdesk-[^-]+-{edition}-windows-x86_64\.exe$',
-                  rf'^rustdesk-[^-]+-{edition}-windows-x86_64\.msi$',
+                  rf'^rustdesk-[^-]+-{edition}-(?:aarch64|aarch64-aarch64)\.dmg$',
+                  rf'^rustdesk-[^-]+-{edition}-(?:android-aarch64|aarch64)\.apk$',
+                  rf'^rustdesk-[^-]+-{edition}-(?:windows-x86_64|x86_64)\.exe$',
+                  rf'^rustdesk-[^-]+-{edition}-(?:windows-x86_64|x86_64)\.msi$',
               ))
           missing = [f'{edition}: {pattern}' for edition, pattern in expected
                      if not any(re.match(pattern, name) for name in names)]
@@ -77,6 +77,7 @@ jobs:
           import pathlib
           import re
           import time
+          from concurrent.futures import ThreadPoolExecutor
           import oss2
           from oss2.exceptions import AccessDenied
 
@@ -93,24 +94,25 @@ jobs:
           bucket = oss2.Bucket(auth, f'https://{endpoint}', bucket_name)
           release_prefix = f'{prefix}/{tag}/'
           try:
-              assets = []
-              for path in sorted(pathlib.Path('release-assets').iterdir()):
-                  if not path.is_file():
-                      continue
+              paths = sorted(path for path in pathlib.Path('release-assets').iterdir() if path.is_file())
+              def upload_asset(path):
                   digest = hashlib.sha256(path.read_bytes()).hexdigest()
                   object_key = release_prefix + path.name
+                  upload_bucket = oss2.Bucket(auth, f'https://{endpoint}', bucket_name)
                   oss2.resumable_upload(
-                      bucket,
+                      upload_bucket,
                       object_key,
                       str(path),
                       multipart_threshold=10 * 1024 * 1024,
                       part_size=10 * 1024 * 1024,
-                      num_threads=4,
+                      num_threads=2,
                   )
-                  uploaded = bucket.head_object(object_key)
+                  uploaded = upload_bucket.head_object(object_key)
                   if uploaded.content_length != path.stat().st_size:
                       raise SystemExit(f'OSS size mismatch for {object_key}')
-                  assets.append({'name': path.name, 'key': object_key, 'size': path.stat().st_size, 'sha256': digest})
+                  return {'name': path.name, 'key': object_key, 'size': path.stat().st_size, 'sha256': digest}
+              with ThreadPoolExecutor(max_workers=4) as executor:
+                  assets = list(executor.map(upload_asset, paths))
 
               catalog = {
                   'schema': 1,
@@ -125,16 +127,21 @@ jobs:
 
               # Keep the newest five stable release prefixes. Do not delete beta objects.
               stable_tag = re.compile(r'^yan-v(\d+)\.(\d+)\.(\d+)-build(\d{8})\.(\d+)$')
+              legacy_tag = re.compile(r'^(\d{8})-(\d+)$')
               tags = set()
               for obj in oss2.ObjectIterator(bucket, prefix=f'{prefix}/'):
                   rest = obj.key[len(prefix) + 1:]
                   if '/' in rest:
                       candidate = rest.split('/', 1)[0]
-                      if stable_tag.fullmatch(candidate):
+                      if stable_tag.fullmatch(candidate) or legacy_tag.fullmatch(candidate):
                           tags.add(candidate)
               def sort_key(value):
                   match = stable_tag.fullmatch(value)
-                  return tuple(int(part) for part in match.groups())
+                  if match:
+                      major, minor, patch, date, sequence = (int(part) for part in match.groups())
+                      return date, sequence, major, minor, patch
+                  date, sequence = (int(part) for part in legacy_tag.fullmatch(value).groups())
+                  return date, sequence, 0, 0, 0
               for old_tag in sorted(tags, key=sort_key, reverse=True)[5:]:
                   old_prefix = f'{prefix}/{old_tag}/'
                   for obj in oss2.ObjectIterator(bucket, prefix=old_prefix):

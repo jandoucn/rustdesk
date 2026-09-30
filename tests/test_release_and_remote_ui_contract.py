@@ -17,11 +17,13 @@ class ReleaseAndRemoteUiContractTest(unittest.TestCase):
         self.assertIn('test "$status" = 200', workflow)
         self.assertNotIn("test \"$status\" = 200 || echo", workflow)
         self.assertIn("oss2.resumable_upload(", workflow)
-        self.assertIn("num_threads=4", workflow)
+        self.assertIn("ThreadPoolExecutor(max_workers=4)", workflow)
+        self.assertIn("num_threads=2", workflow)
         self.assertIn("bucket.head_object(object_key)", workflow)
         self.assertIn("sorted(tags, key=sort_key, reverse=True)[5:]", workflow)
         self.assertIn("if len(names) != 8 or missing", workflow)
         self.assertIn("stable_tag.fullmatch(candidate)", workflow)
+        self.assertIn("legacy_tag.fullmatch(candidate)", workflow)
         self.assertIn("oss:PutObject/oss:GetObject/oss:DeleteObject", workflow)
         self.assertIn("and oss:ListObjects on", workflow)
         self.assertIn("request-id={request_id}", workflow)
@@ -32,6 +34,8 @@ class ReleaseAndRemoteUiContractTest(unittest.TestCase):
         self.assertIn("secrets: inherit", caller)
         self.assertIn('CUSTOM_TAG: ${{ inputs.tag }}', caller)
         self.assertNotIn('if [ "${{ inputs.tag }}"', caller)
+        self.assertIn('tag="${base}-build${build_number}"', caller)
+        self.assertNotIn('git/ref/tags/${base}', caller)
         self.assertIn("fail-fast: true", caller)
 
     def test_removed_remote_actions_do_not_reappear(self):
