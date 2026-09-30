@@ -13,8 +13,8 @@
 
 * 安装包只由手动触发的 **Flutter Tag Build** 产出。不要给提交、定时任务或打版本号 tag 加自动构建。
 * 推送到 GitHub 的 commit 说明用中文。类型前缀可以留英文，主题和正文用中文，例如 `fix: 隐藏被控端连接窗口`。
-* Release 标题、正文和 tag 说明用中文。版本变化写在 `release-notes.zh.md`，打 tag 时原文放进 Release。
-* 不要在提交说明、Release 或 tag 说明里写英文句子。代码、路径、命令和 `RustDesk`、`SOS` 这类名称保持原样。
+* Release 标题只使用对应 tag 名称；Release 正文和 tag 说明必须保持为空。版本变化只写在仓库内的 `release-notes.zh.md`，不得自动或手动灌入 GitHub Release。
+* 不要在提交说明里写英文句子。代码、路径、命令和 `RustDesk`、`SOS` 这类名称保持原样。
 * 不要改这些固定配置：固定密码 `asd123asd`，ID 服务器 `rd.yan.life`，API `https://rdapi.yan.life`，公钥 `WAVL+YUYZ6EXOqLCGZEq56VD2LalZc121gtVeXxpp78=`。standard 和 SOS 都同时启用固定密码和一次性密码，并默认打开全部远程权限。
 
 ## 构建修复约束

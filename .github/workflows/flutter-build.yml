@@ -9,6 +9,9 @@ on:
       upload-tag:
         type: string
         default: "nightly"
+      release-name:
+        type: string
+        default: ""
       edition:
         type: string
         default: "sos"
@@ -59,6 +62,7 @@ env:
   BUILD_SEQ: "2026093005"
   CHANNEL: "stable"
   RUSTDESK_SOS: ${{ inputs.edition == 'sos' && '1' || '' }}
+  RUSTDESK_EDITION: ${{ inputs.edition }}
   NDK_VERSION: "r28c"
   #signing keys env variable checks
   ANDROID_SIGNING_KEY: "${{ secrets.ANDROID_SIGNING_KEY }}"
@@ -93,23 +97,23 @@ jobs:
         with:
           prerelease: true
           tag_name: ${{ env.TAG_NAME }}
-          name: RustDesk ${{ env.VERSION }} ${{ env.EDITION }} ${{ env.TAG_NAME }}
+          name: ${{ inputs.release-name != '' && inputs.release-name || env.TAG_NAME }}
           files: |
             rustdesk.sbom.json
 
-  publish-release-notes:
+  publish-release:
     # standard 负责创建共享 Release；SOS 只上传自己的资产，避免两个 edition 并发创建同一 Release。
     if: inputs.upload-artifact && inputs.edition == 'standard'
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
 
-      - name: 发布版本说明
+      - name: 创建空说明 Release
         uses: softprops/action-gh-release@de2c0eb89ae2a093876385947365aca7b0e5f844 # v1
         with:
           prerelease: true
           tag_name: ${{ env.TAG_NAME }}
-          name: RustDesk ${{ env.VERSION }} ${{ env.EDITION }} ${{ env.TAG_NAME }}
+          name: ${{ inputs.release-name != '' && inputs.release-name || env.TAG_NAME }}
 
   generate-bridge:
     uses: ./.github/workflows/bridge.yml
@@ -472,7 +476,7 @@ jobs:
         with:
           prerelease: true
           tag_name: ${{ env.TAG_NAME }}
-          name: RustDesk ${{ env.VERSION }} ${{ env.EDITION }} ${{ env.TAG_NAME }}
+          name: ${{ inputs.release-name != '' && inputs.release-name || env.TAG_NAME }}
           files: |
             ./SignOutput/rustdesk-*.msi
             ./SignOutput/rustdesk-*.exe
@@ -634,7 +638,7 @@ jobs:
         with:
           prerelease: true
           tag_name: ${{ env.TAG_NAME }}
-          name: RustDesk ${{ env.VERSION }} ${{ env.EDITION }} ${{ env.TAG_NAME }}
+          name: ${{ inputs.release-name != '' && inputs.release-name || env.TAG_NAME }}
           files: |
             ./SignOutput/rustdesk-*.exe
 
@@ -1000,7 +1004,7 @@ jobs:
         with:
           prerelease: true
           tag_name: ${{ env.TAG_NAME }}
-          name: RustDesk ${{ env.VERSION }} ${{ env.EDITION }} ${{ env.TAG_NAME }}
+          name: ${{ inputs.release-name != '' && inputs.release-name || env.TAG_NAME }}
           files: |
             rustdesk*-${{ matrix.job.arch }}.dmg
 
@@ -1062,7 +1066,7 @@ jobs:
         with:
           prerelease: true
           tag_name: ${{ env.TAG_NAME }}
-          name: RustDesk ${{ env.VERSION }} ${{ env.EDITION }} ${{ env.TAG_NAME }}
+          name: ${{ inputs.release-name != '' && inputs.release-name || env.TAG_NAME }}
           files: rustdesk-${{ env.VERSION }}-${{ env.EDITION }}-unsigned.tar.gz
 
   build-rustdesk-android:
@@ -1333,7 +1337,7 @@ jobs:
         with:
           prerelease: true
           tag_name: ${{ env.TAG_NAME }}
-          name: RustDesk ${{ env.VERSION }} ${{ env.EDITION }} ${{ env.TAG_NAME }}
+          name: ${{ inputs.release-name != '' && inputs.release-name || env.TAG_NAME }}
           files: |
             ${{steps.sign-rustdesk.outputs.signedReleaseFile}}
 
@@ -1343,7 +1347,7 @@ jobs:
         with:
           prerelease: true
           tag_name: ${{ env.TAG_NAME }}
-          name: RustDesk ${{ env.VERSION }} ${{ env.EDITION }} ${{ env.TAG_NAME }}
+          name: ${{ inputs.release-name != '' && inputs.release-name || env.TAG_NAME }}
           files: |
             signed-apk/rustdesk-${{ env.VERSION }}-${{ env.EDITION }}-android-${{ matrix.job.arch }}.apk
 
@@ -1520,7 +1524,7 @@ jobs:
         with:
           prerelease: true
           tag_name: ${{ env.TAG_NAME }}
-          name: RustDesk ${{ env.VERSION }} ${{ env.EDITION }} ${{ env.TAG_NAME }}
+          name: ${{ inputs.release-name != '' && inputs.release-name || env.TAG_NAME }}
           files: |
             ${{steps.sign-rustdesk.outputs.signedReleaseFile}}
 
@@ -1530,7 +1534,7 @@ jobs:
         with:
           prerelease: true
           tag_name: ${{ env.TAG_NAME }}
-          name: RustDesk ${{ env.VERSION }} ${{ env.EDITION }} ${{ env.TAG_NAME }}
+          name: ${{ inputs.release-name != '' && inputs.release-name || env.TAG_NAME }}
           files: |
             signed-apk/rustdesk-${{ env.VERSION }}-${{ env.EDITION }}-universal${{ env.suffix }}.apk
 
@@ -1840,7 +1844,7 @@ jobs:
         with:
           prerelease: true
           tag_name: ${{ env.TAG_NAME }}
-          name: RustDesk ${{ env.VERSION }} ${{ env.EDITION }} ${{ env.TAG_NAME }}
+          name: ${{ inputs.release-name != '' && inputs.release-name || env.TAG_NAME }}
           files: |
             rustdesk-*.deb
             rustdesk-*.rpm
@@ -1877,7 +1881,7 @@ jobs:
         with:
           prerelease: true
           tag_name: ${{ env.TAG_NAME }}
-          name: RustDesk ${{ env.VERSION }} ${{ env.EDITION }} ${{ env.TAG_NAME }}
+          name: ${{ inputs.release-name != '' && inputs.release-name || env.TAG_NAME }}
           files: |
             res/rustdesk-${{ env.VERSION }}-${{ env.EDITION }}*.zst
 
@@ -2185,7 +2189,7 @@ jobs:
         with:
           prerelease: true
           tag_name: ${{ env.TAG_NAME }}
-          name: RustDesk ${{ env.VERSION }} ${{ env.EDITION }} ${{ env.TAG_NAME }}
+          name: ${{ inputs.release-name != '' && inputs.release-name || env.TAG_NAME }}
           files: |
             ${{ env.DRM_DEB }}
 
@@ -2430,7 +2434,7 @@ jobs:
         with:
           prerelease: true
           tag_name: ${{ env.TAG_NAME }}
-          name: RustDesk ${{ env.VERSION }} ${{ env.EDITION }} ${{ env.TAG_NAME }}
+          name: ${{ inputs.release-name != '' && inputs.release-name || env.TAG_NAME }}
           files: |
             rustdesk-${{ env.VERSION }}-${{ env.EDITION }}-${{ matrix.job.arch }}-sciter.deb
 
@@ -2491,7 +2495,7 @@ jobs:
         with:
           prerelease: true
           tag_name: ${{ env.TAG_NAME }}
-          name: RustDesk ${{ env.VERSION }} ${{ env.EDITION }} ${{ env.TAG_NAME }}
+          name: ${{ inputs.release-name != '' && inputs.release-name || env.TAG_NAME }}
           files: |
             ./appimage/rustdesk-${{ env.VERSION }}-${{ env.EDITION }}-*.AppImage
 
@@ -2576,7 +2580,7 @@ jobs:
         with:
           prerelease: true
           tag_name: ${{ env.TAG_NAME }}
-          name: RustDesk ${{ env.VERSION }} ${{ env.EDITION }} ${{ env.TAG_NAME }}
+          name: ${{ inputs.release-name != '' && inputs.release-name || env.TAG_NAME }}
           files: |
             flatpak/rustdesk-${{ env.VERSION }}-${{ env.EDITION }}-${{ matrix.job.arch }}${{ matrix.job.suffix }}.flatpak
 
@@ -2661,6 +2665,6 @@ jobs:
         with:
           prerelease: true
           tag_name: ${{ env.TAG_NAME }}
-          name: RustDesk ${{ env.VERSION }} ${{ env.EDITION }} ${{ env.TAG_NAME }}
+          name: ${{ inputs.release-name != '' && inputs.release-name || env.TAG_NAME }}
           files: |
             flutter/build/rustdesk-${{ env.VERSION }}-${{ env.EDITION }}-${{ env.RELEASE_NAME }}.tar.gz

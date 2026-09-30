@@ -23,6 +23,10 @@ on:
         type: string
         default: ""
 
+concurrency:
+  group: flutter-tag-release
+  cancel-in-progress: false
+
 jobs:
   release-tag:
     runs-on: ubuntu-24.04
@@ -30,6 +34,7 @@ jobs:
       contents: read
     outputs:
       tag: ${{ steps.date.outputs.tag }}
+      release_name: ${{ steps.date.outputs.release_name }}
     steps:
       - uses: actions/checkout@v4
       - id: date
@@ -39,14 +44,35 @@ jobs:
           set -euo pipefail
           version=$(python3 -c 'import json; print(json.load(open("version.json"))["version"])')
           build_number=$(python3 -c 'import json; print(json.load(open("version.json"))["build_number"])')
-          base="yan-v${version}"
           if [ "$CUSTOM_TAG" != "" ]; then
             tag="$CUSTOM_TAG"
+            release_name="$CUSTOM_TAG"
           else
-            tag="${base}-build${build_number}"
+            build_date="${build_number%%[.-]*}"
+            if [[ ! "$build_date" =~ ^[0-9]{8}$ ]]; then
+              echo "Invalid build date in version.json: $build_number" >&2
+              exit 1
+            fi
+            formatted_date="${build_date:0:4}.${build_date:4:2}.${build_date:6:2}"
+            tag_base="v${version}-build-${formatted_date}"
+            max_sequence=0
+            while read -r _ ref; do
+              candidate="${ref##*-}"
+              if [[ "$candidate" =~ ^[0-9]+$ ]]; then
+                value=$((10#$candidate))
+                if (( value > max_sequence )); then
+                  max_sequence=$value
+                fi
+              fi
+            done < <(git ls-remote --tags origin "refs/tags/${tag_base}-*")
+            printf -v sequence '%02d' "$((max_sequence + 1))"
+            tag="${tag_base}-${sequence}"
+            release_name="$tag"
           fi
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "release_name=$release_name" >> "$GITHUB_OUTPUT"
           echo "Release tag: $tag"
+          echo "Release name: $release_name"
 
   run-flutter-tag-build:
     needs: release-tag
@@ -60,6 +86,7 @@ jobs:
     with:
       upload-artifact: true
       upload-tag: ${{ inputs.tag != '' && inputs.tag || needs.release-tag.outputs.tag }}
+      release-name: ${{ inputs.tag != '' && inputs.tag || needs.release-tag.outputs.release_name }}
       edition: ${{ matrix.edition }}
       platforms: ${{ inputs.platforms }}
 
