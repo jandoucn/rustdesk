@@ -57,6 +57,7 @@ class MacosReleaseAppPathTest(unittest.TestCase):
 
         self.assertIn('EDITION: "${{ inputs.edition }}"', workflow)
         self.assertNotIn('EDITION: "custom"', workflow)
+        self.assertNotIn("body_path: release-notes.zh.md", workflow)
         self.assertIn(
             "rustdesk-${{ env.VERSION }}-${{ env.EDITION }}-windows-",
             workflow,
