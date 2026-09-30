@@ -7,10 +7,7 @@ pub use protobuf;
 pub use protos::rendezvous as rendezvous_proto;
 use serde_derive::{Deserialize, Serialize};
 use std::{
-    fs::File,
-    io::{self, BufRead},
     net::{IpAddr, Ipv4Addr, SocketAddr, SocketAddrV4},
-    path::Path,
     time::{self, SystemTime, UNIX_EPOCH},
 };
 pub use tokio;
@@ -227,16 +224,30 @@ pub fn get_version_from_url(url: &str) -> String {
 
 pub fn gen_version() {
     println!("cargo:rerun-if-changed=Cargo.toml");
+    println!("cargo:rerun-if-changed=version.json");
+    use std::fs::File;
     use std::io::prelude::*;
     let mut file = File::create("./src/version.rs").unwrap();
-    for line in read_lines("Cargo.toml").unwrap().flatten() {
-        let ab: Vec<&str> = line.split('=').map(|x| x.trim()).collect();
-        if ab.len() == 2 && ab[0] == "version" {
-            file.write_all(format!("pub const VERSION: &str = {};\n", ab[1]).as_bytes())
-                .ok();
-            break;
-        }
-    }
+    let source = std::fs::read_to_string("version.json").unwrap_or_default();
+    let value = |key: &str| -> String {
+        source.lines().find_map(|line| {
+            let (k, v) = line.split_once(':')?;
+            if k.trim().trim_matches('"') != key { return None; }
+            Some(v.trim().trim_end_matches(',').trim().trim_matches('"').to_owned())
+        }).unwrap_or_default()
+    };
+    let version = value("version");
+    let build_seq = value("build_seq");
+    file.write_all(format!("pub const VERSION: &str = \"{version}\";\n").as_bytes()).ok();
+    file.write_all(format!("pub const PRODUCT: &str = \"{}\";\n", value("product")).as_bytes()).ok();
+    file.write_all(format!("pub const EDITION: &str = \"{}\";\n", value("edition")).as_bytes()).ok();
+    file.write_all(format!("pub const BUILD_NUMBER: &str = \"{}\";\n", value("build_number")).as_bytes()).ok();
+    file.write_all(format!("pub const BUILD_SEQ: u64 = {build_seq};\n").as_bytes()).ok();
+    file.write_all(format!("pub const CHANNEL: &str = \"{}\";\n", value("channel")).as_bytes()).ok();
+    let source_commit = std::process::Command::new("git").args(["rev-parse", "HEAD"]).output()
+        .ok().filter(|o| o.status.success()).map(|o| String::from_utf8_lossy(&o.stdout).trim().to_owned())
+        .filter(|s| !s.is_empty()).unwrap_or_else(|| value("source_commit"));
+    file.write_all(format!("pub const SOURCE_COMMIT: &str = \"{source_commit}\";\n").as_bytes()).ok();
     // generate build date
     let build_date = format!("{}", chrono::Local::now().format("%Y-%m-%d %H:%M"));
     file.write_all(
@@ -244,14 +255,6 @@ pub fn gen_version() {
     )
     .ok();
     file.sync_all().ok();
-}
-
-fn read_lines<P>(filename: P) -> io::Result<io::Lines<io::BufReader<File>>>
-where
-    P: AsRef<Path>,
-{
-    let file = File::open(filename)?;
-    Ok(io::BufReader::new(file).lines())
 }
 
 pub fn is_valid_custom_id(id: &str) -> bool {
@@ -484,7 +487,7 @@ pub fn init_log(_is_async: bool, _name: &str) -> Option<flexi_logger::LoggerHand
     logger_holder
 }
 
-#[derive(Debug, Default, Deserialize, Serialize)]
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
 pub struct VersionCheckRequest {
     #[serde(default)]
     pub os: String,
@@ -496,20 +499,90 @@ pub struct VersionCheckRequest {
     pub device_id: Vec<u8>,
     #[serde(default)]
     pub typ: String,
+    #[serde(default)]
+    pub client_id: String,
+    #[serde(default)]
+    pub client_uuid: String,
+    #[serde(default)]
+    pub product: String,
+    #[serde(default)]
+    pub edition: String,
+    #[serde(default)]
+    pub version: String,
+    #[serde(default)]
+    pub build_number: String,
+    #[serde(default)]
+    pub build_seq: u64,
+    #[serde(default)]
+    pub channel: String,
+    #[serde(default)]
+    pub platform: String,
+    #[serde(default)]
+    pub distribution: String,
+    #[serde(default)]
+    pub install_mode: String,
+    #[serde(default)]
+    pub source_commit: String,
 }
 
-#[derive(Debug, Default, Deserialize, Serialize)]
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
 pub struct VersionCheckResponse {
     #[serde(default)]
     pub url: String,
+    #[serde(default)]
+    pub update_available: bool,
+    #[serde(default)]
+    pub mode: String,
+    #[serde(default)]
+    pub auto_install: bool,
+    #[serde(default)]
+    pub channel: String,
+    #[serde(default)]
+    pub current_version: String,
+    #[serde(default)]
+    pub current_build_seq: u64,
+    #[serde(default)]
+    pub target_version: String,
+    #[serde(default)]
+    pub target_build_seq: u64,
+    #[serde(default)]
+    pub manifest_url: String,
+    #[serde(default)]
+    pub manifest: Option<UpdateManifest>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+pub struct UpdateManifest {
+    #[serde(default)] pub version: String,
+    #[serde(default)] pub build_number: String,
+    #[serde(default)] pub build_seq: u64,
+    #[serde(default)] pub product: String,
+    #[serde(default)] pub edition: String,
+    #[serde(default)] pub channel: String,
+    #[serde(default)] pub source_commit: String,
+    #[serde(default)] pub targets: std::collections::HashMap<String, UpdateTarget>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+pub struct UpdateTarget {
+    #[serde(default)] pub primary: String,
+    #[serde(default)] pub mirrors: Vec<String>,
+    #[serde(default)] pub size: u64,
+    #[serde(default)] pub sha256: String,
+    #[serde(default)] pub signature: String,
+    #[serde(default)] pub signature_key_id: String,
+}
+
+pub fn is_newer_version(version: &str, build_seq: u64, current_version: &str, current_build_seq: u64) -> bool {
+    get_version_number(version) > get_version_number(current_version)
+        || (get_version_number(version) == get_version_number(current_version) && build_seq > current_build_seq)
 }
 
 pub const VER_TYPE_RUSTDESK_CLIENT: &str = "rustdesk-client";
 pub const VER_TYPE_RUSTDESK_SERVER: &str = "rustdesk-server";
+pub const UPDATE_KEYS_URL: &str = "https://rdapi.yan.life/rd/update/v1/keys.json";
 
 pub fn version_check_request(typ: String) -> (VersionCheckRequest, String) {
-    const URL: &str = "https://api.rustdesk.com/version/latest";
-
     use sysinfo::System;
     let system = System::new();
     let os = system.distribution_id();
@@ -524,8 +597,9 @@ pub fn version_check_request(typ: String) -> (VersionCheckRequest, String) {
             arch,
             device_id,
             typ,
+            ..Default::default()
         },
-        URL.to_string(),
+        "https://rdapi.yan.life/rd/update/v1/check".to_string(),
     )
 }
 
@@ -644,5 +718,13 @@ mod test {
         assert_eq!(get_version_number("1.1.10-1"), 1001101);
         assert_eq!(get_version_number("1.1.11-1"), 1001111);
         assert_eq!(get_version_number("1.2.3"), 1002030);
+    }
+
+    #[test]
+    fn test_build_sequence_participates_in_update_comparison() {
+        assert!(is_newer_version("1.5.0", 2026100101, "1.5.0", 2026093001));
+        assert!(is_newer_version("1.6.0", 1, "1.5.0", 999));
+        assert!(!is_newer_version("1.5.0", 2026093001, "1.5.0", 2026093001));
+        assert!(!is_newer_version("1.5.0", 1, "1.5.0", 2));
     }
 }

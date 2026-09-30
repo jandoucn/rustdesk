@@ -19,7 +19,7 @@ on:
           - android
         default: all
       tag:
-        description: 追加到已有版本号，留空则新建
+        description: 自定义 tag，留空按统一版本源生成
         type: string
         default: ""
 
@@ -31,26 +31,25 @@ jobs:
     outputs:
       tag: ${{ steps.date.outputs.tag }}
     steps:
+      - uses: actions/checkout@v4
       - id: date
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          day=$(date -u +%Y%m%d)
-          mapfile -t names < <(gh api --paginate "repos/${GITHUB_REPOSITORY}/git/matching-refs/tags/${day}" --jq '.[].ref | sub("refs/tags/"; "")')
-          max=0
-          for name in "${names[@]}"; do
-            [ -n "$name" ] || continue
-            if [[ "$name" =~ ^${day}-([0-9]+)$ ]]; then
-              n=$((10#${BASH_REMATCH[1]}))
-              if (( n > max )); then
-                max=$n
-              fi
-            fi
-          done
-          printf -v suffix '%02d' $((max + 1))
-          echo "tag=${day}-${suffix}" >> "$GITHUB_OUTPUT"
-          echo "Release tag: ${day}-${suffix}"
+          version=$(python3 -c 'import json; print(json.load(open("version.json"))["version"])')
+          build_number=$(python3 -c 'import json; print(json.load(open("version.json"))["build_number"])')
+          channel=$(python3 -c 'import json; print(json.load(open("version.json"))["channel"])')
+          base="yan-v${version}"
+          if [ "${{ inputs.tag }}" != "" ]; then
+            tag="${{ inputs.tag }}"
+          elif [ "$channel" = "stable" ] && ! gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${base}" >/dev/null 2>&1; then
+            tag="$base"
+          else
+            tag="${base}-build${build_number}"
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "Release tag: $tag"
 
   run-flutter-tag-build:
     needs: release-tag

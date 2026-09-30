@@ -93,6 +93,8 @@ pub mod input {
 
 lazy_static::lazy_static! {
     pub static ref SOFTWARE_UPDATE_URL: Arc<Mutex<String>> = Default::default();
+    pub static ref SOFTWARE_UPDATE_RESPONSE: Arc<Mutex<Option<hbb_common::VersionCheckResponse>>> = Default::default();
+    pub static ref LAST_UPDATE_CHECK: Arc<Mutex<Option<String>>> = Default::default();
     pub static ref DEVICE_ID: Arc<Mutex<String>> = Default::default();
     pub static ref DEVICE_NAME: Arc<Mutex<String>> = Default::default();
     static ref PUBLIC_IPV6_ADDR: Arc<Mutex<(Option<SocketAddr>, Option<Instant>)>> = Default::default();
@@ -1021,6 +1023,43 @@ fn add_runtime_inventory_fields(out: &mut serde_json::Value) {
     out["install_mode"] = json!(install_mode);
     out["client_arch"] = json!(std::env::consts::ARCH);
     out["executable_name"] = json!(executable_name);
+    out["product"] = json!(crate::PRODUCT);
+    out["edition"] = json!(crate::EDITION);
+    out["version"] = json!(crate::VERSION);
+    out["build_number"] = json!(crate::BUILD_NUMBER);
+    out["build_seq"] = json!(crate::BUILD_SEQ);
+    out["source_commit"] = json!(crate::SOURCE_COMMIT);
+    out["channel"] = json!(crate::CHANNEL);
+    let (last_update_status, last_update_source) = SOFTWARE_UPDATE_RESPONSE
+        .lock()
+        .unwrap()
+        .as_ref()
+        .map(|response| {
+            let status = if response.mode == "disabled" {
+                "disabled"
+            } else if response.update_available {
+                response.mode.as_str()
+            } else {
+                "up_to_date"
+            };
+            let source = if response.update_available { "primary" } else { "" };
+            (status.to_owned(), source.to_owned())
+        })
+        .unwrap_or_else(|| ("not_checked".to_owned(), String::new()));
+    out["last_update_check"] = json!(LAST_UPDATE_CHECK.lock().unwrap().clone().unwrap_or_default());
+    out["last_update_status"] = json!(last_update_status);
+    out["last_update_error"] = json!("");
+    out["last_update_source"] = json!(last_update_source);
+    out["schema_version"] = json!(1);
+    out["capabilities"] = json!(["heartbeat", "sysinfo", "software_update"]);
+    out["extensions"] = json!({});
+    let public_ip = PUBLIC_IPV6_ADDR
+        .lock()
+        .unwrap()
+        .0
+        .map(|addr| addr.ip().to_string())
+        .unwrap_or_default();
+    out["public_ip"] = json!(public_ip);
 
     #[cfg(not(any(target_os = "android", target_os = "ios")))]
     {
@@ -1100,21 +1139,31 @@ pub fn is_modifier(evt: &KeyEvent) -> bool {
 }
 
 pub fn check_software_update() {
-    if is_custom_client() {
-        return;
-    }
     let opt = LocalConfig::get_option(keys::OPTION_ENABLE_CHECK_UPDATE);
     if config::option2bool(keys::OPTION_ENABLE_CHECK_UPDATE, &opt) {
         std::thread::spawn(move || allow_err!(do_check_software_update()));
     }
 }
 
-// No need to check `danger_accept_invalid_cert` for now.
-// Because the url is always `https://api.rustdesk.com/version/latest`.
+// The endpoint is fixed to the Yan update service; TLS policy remains shared
+// with the existing HTTP client and proxy configuration.
 #[tokio::main(flavor = "current_thread")]
 pub async fn do_check_software_update() -> hbb_common::ResultType<()> {
-    let (request, url) =
+    let (mut request, url) =
         hbb_common::version_check_request(hbb_common::VER_TYPE_RUSTDESK_CLIENT.to_string());
+    request.product = crate::PRODUCT.to_owned();
+    request.edition = crate::EDITION.to_owned();
+    request.version = crate::VERSION.to_owned();
+    request.build_number = crate::BUILD_NUMBER.to_owned();
+    request.build_seq = crate::BUILD_SEQ;
+    request.channel = crate::CHANNEL.to_owned();
+    request.source_commit = crate::SOURCE_COMMIT.to_owned();
+    request.platform = std::env::consts::OS.to_owned();
+    request.arch = std::env::consts::ARCH.to_owned();
+    request.distribution = "installed".to_owned();
+    request.install_mode = "installed".to_owned();
+    request.client_id = crate::get_app_name();
+    request.client_uuid = hex::encode(&request.device_id);
     let proxy_conf = Config::get_socks();
     let tls_url = get_url_for_tls(&url, &proxy_conf);
     let tls_type = get_cached_tls_type(tls_url);
@@ -1140,10 +1189,16 @@ pub async fn do_check_software_update() -> hbb_common::ResultType<()> {
     };
     let bytes = latest_release_response.bytes().await?;
     let resp: hbb_common::VersionCheckResponse = serde_json::from_slice(&bytes)?;
-    let response_url = resp.url;
-    let latest_release_version = response_url.rsplit('/').next().unwrap_or_default();
-
-    if get_version_number(&latest_release_version) > get_version_number(crate::VERSION) {
+    *LAST_UPDATE_CHECK.lock().unwrap() = Some(chrono::Utc::now().to_rfc3339());
+    let response_url = resp.manifest.as_ref().and_then(|m| {
+        #[cfg(not(any(target_os = "android", target_os = "ios")))]
+        { let key = crate::updater::current_update_target_key(); m.targets.get(&key).map(|t| t.primary.clone()) }
+        #[cfg(any(target_os = "android", target_os = "ios"))]
+        { None }
+    }).filter(|u| !u.is_empty()).unwrap_or_else(|| resp.url.clone());
+    let is_newer = resp.update_available && hbb_common::is_newer_version(
+        &resp.target_version, resp.target_build_seq, crate::VERSION, crate::BUILD_SEQ);
+    if is_newer {
         #[cfg(feature = "flutter")]
         {
             let mut m = HashMap::new();
@@ -1154,8 +1209,10 @@ pub async fn do_check_software_update() -> hbb_common::ResultType<()> {
             }
         }
         *SOFTWARE_UPDATE_URL.lock().unwrap() = response_url;
+        *SOFTWARE_UPDATE_RESPONSE.lock().unwrap() = Some(resp);
     } else {
         *SOFTWARE_UPDATE_URL.lock().unwrap() = "".to_string();
+        *SOFTWARE_UPDATE_RESPONSE.lock().unwrap() = Some(resp);
     }
     Ok(())
 }
@@ -3982,10 +4039,24 @@ mod tests {
             "install_mode",
             "client_arch",
             "executable_name",
+            "product",
+            "edition",
+            "version",
+            "build_number",
+            "source_commit",
+            "channel",
+            "last_update_check",
+            "last_update_status",
+            "last_update_error",
+            "last_update_source",
+            "public_ip",
         ] {
             assert!(payload[key].is_string(), "missing string field {key}");
         }
         assert!(payload["network"]["private_ips"].is_array());
+        assert_eq!(payload["schema_version"], 1);
+        assert!(payload["capabilities"].is_array());
+        assert!(payload["extensions"].is_object());
         assert_eq!(payload["hostname"], "test");
     }
 

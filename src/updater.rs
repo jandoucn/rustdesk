@@ -1,4 +1,5 @@
 use crate::{common::do_check_software_update, hbbs_http::create_http_client_with_url_strict};
+use hbb_common::base64::{engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD}, Engine as _};
 use hbb_common::{bail, config, log, ResultType};
 use base::config::keys;
 use std::{
@@ -11,12 +12,16 @@ use std::{
     },
     time::{Duration, Instant},
 };
+use sha2::{Digest, Sha256};
 
 #[cfg(target_os = "macos")]
 use std::os::{
     fd::AsRawFd,
     unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt},
 };
+
+#[cfg(target_os = "linux")]
+use std::os::unix::fs::PermissionsExt;
 
 #[cfg(target_os = "macos")]
 struct MacUpdateLock {
@@ -181,7 +186,7 @@ fn check_update(manually: bool) -> ResultType<()> {
         return Ok(());
     }
     #[cfg(target_os = "windows")]
-    let update_msi = crate::platform::is_msi_installed()? && !crate::is_custom_client();
+    let update_msi = crate::platform::is_msi_installed()?;
     if !(manually || config::Config::get_bool_option(keys::OPTION_ALLOW_AUTO_UPDATE)) {
         return Ok(());
     }
@@ -190,83 +195,208 @@ fn check_update(manually: bool) -> ResultType<()> {
         return Ok(());
     }
 
-    let update_url = crate::common::SOFTWARE_UPDATE_URL.lock().unwrap().clone();
-    if update_url.is_empty() {
+    let response = crate::common::SOFTWARE_UPDATE_RESPONSE.lock().unwrap().clone();
+    let Some(response) = response else {
         log::debug!("No update available.");
-    } else {
-        let download_url = update_url.replace("tag", "download");
-        let version = download_url.split('/').last().unwrap_or_default();
+        return Ok(());
+    };
+    let Some(manifest) = response.manifest else { return Ok(()); };
+    let target = manifest.targets.get(&current_update_target_key()).cloned();
+    let Some(target) = target else { return Ok(()); };
+    if response.mode == "disabled" || !response.update_available { return Ok(()); }
+    if response.mode == "notify" { return Ok(()); }
+    let should_install = response.mode == "auto_install"
+        && response.auto_install
+        && config::Config::get_bool_option(keys::OPTION_ALLOW_AUTO_UPDATE);
+    let version = manifest.version.as_str();
+    report_update_event("started", manifest.version.as_str(), manifest.build_seq, "primary");
+    let mut download_urls = vec![(target.primary.clone(), "primary")];
+    download_urls.extend(target.mirrors.iter().cloned().map(|url| (url, "mirror")));
+    let mut downloaded = None;
+    for (download_url, source) in download_urls {
+        if download_url.is_empty() { continue; }
+        match download_and_verify(&download_url, &target) {
+            Ok(path) => { downloaded = Some((path, source)); break; }
+            Err(e) => log::warn!("Update source failed: {}: {}", download_url, e),
+        }
+    }
+    let Some((file_path, source)) = downloaded else {
+        report_update_event("failed", manifest.version.as_str(), manifest.build_seq, "primary");
+        bail!("all update sources failed");
+    };
+    report_update_event("downloaded", manifest.version.as_str(), manifest.build_seq, source);
+    {
         #[cfg(target_os = "windows")]
-        let download_url = if cfg!(feature = "flutter") {
-            let Some(arch) = crate::platform::windows::release_arch_suffix() else {
-                bail!(
-                    "Unsupported Windows release architecture: {}",
-                    std::env::consts::ARCH
-                );
-            };
-            format!(
-                "{}/rustdesk-{}-{}.{}",
-                download_url,
-                version,
-                arch,
-                if update_msi { "msi" } else { "exe" }
-            )
-        } else {
-            format!("{}/rustdesk-{}-x86-sciter.exe", download_url, version)
-        };
-        log::debug!("New version available: {}", &version);
-        let client = create_http_client_with_url_strict(&download_url)?;
-        let Some(file_path) = get_download_file_from_url(&download_url) else {
-            bail!("Failed to get the file path from the URL: {}", download_url);
-        };
-        let mut is_file_exists = false;
-        if file_path.exists() {
-            // Check if the file size is the same as the server file size
-            // If the file size is the same, we don't need to download it again.
-            let file_size = std::fs::metadata(&file_path)?.len();
-            let response = client.head(&download_url).send()?;
-            if !response.status().is_success() {
-                bail!("Failed to get the file size: {}", response.status());
-            }
-            let total_size = response
-                .headers()
-                .get(reqwest::header::CONTENT_LENGTH)
-                .and_then(|ct_len| ct_len.to_str().ok())
-                .and_then(|ct_len| ct_len.parse::<u64>().ok());
-            let Some(total_size) = total_size else {
-                bail!("Failed to get content length");
-            };
-            if file_size == total_size {
-                is_file_exists = true;
-            } else {
-                std::fs::remove_file(&file_path)?;
-            }
-        }
-        if !is_file_exists {
-            let response = client.get(&download_url).send()?;
-            if !response.status().is_success() {
-                bail!(
-                    "Failed to download the new version file: {}",
-                    response.status()
-                );
-            }
-            let file_data = response.bytes()?;
-            let mut file = std::fs::File::create(&file_path)?;
-            file.write_all(&file_data)?;
-        }
+        log::debug!("New version available: {}", version);
         // We have checked if the `conns` is empty before, but we need to check again.
         // No need to care about the downloaded file here, because it's rare case that the `conns` are empty
         // before the download, but not empty after the download.
-        if has_no_active_conns() {
+        if should_install && has_no_active_conns() {
             #[cfg(target_os = "windows")]
-            update_new_version(update_msi, &version, &file_path);
+            update_new_version(update_msi, version, manifest.build_seq, source, &file_path);
+            #[cfg(target_os = "linux")]
+            if let Err(err) = install_linux_appimage(&file_path) {
+                log::error!("Failed to install AppImage update: {}", err);
+                report_update_event("rolled_back", version, manifest.build_seq, source);
+            } else {
+                report_update_event("installed", version, manifest.build_seq, source);
+            }
         }
     }
     Ok(())
 }
 
+pub fn current_update_target_key() -> String {
+    let platform = std::env::consts::OS;
+    let arch = std::env::consts::ARCH;
+    format!("{platform}-{arch}-{}", update_target_kind())
+}
+
 #[cfg(target_os = "windows")]
-fn update_new_version(update_msi: bool, version: &str, file_path: &PathBuf) {
+fn update_target_kind() -> &'static str {
+    if crate::platform::is_msi_installed().unwrap_or(false) { "msi" } else { "exe" }
+}
+
+#[cfg(target_os = "linux")]
+fn update_target_kind() -> &'static str { "appimage" }
+
+#[cfg(target_os = "macos")]
+fn update_target_kind() -> &'static str { "dmg" }
+
+#[cfg(not(any(target_os = "windows", target_os = "linux", target_os = "macos")))]
+fn update_target_kind() -> &'static str { "pkg" }
+
+#[derive(Debug, serde::Deserialize)]
+struct UpdateKeys {
+    #[serde(default)]
+    keys: Vec<UpdateKey>,
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct UpdateKey {
+    id: String,
+    #[serde(rename = "type", default)]
+    key_type: String,
+    public_key: String,
+}
+
+fn decode_signature_value(value: &str) -> ResultType<Vec<u8>> {
+    STANDARD
+        .decode(value)
+        .or_else(|_| URL_SAFE_NO_PAD.decode(value))
+        .map_err(|e| anyhow::anyhow!("invalid update signature encoding: {e}"))
+}
+
+fn verify_update_signature(data: &[u8], target: &hbb_common::UpdateTarget) -> ResultType<()> {
+    if target.signature.is_empty() {
+        return Ok(());
+    }
+    if target.signature_key_id.is_empty() {
+        bail!("signed update is missing signature_key_id");
+    }
+    let client = create_http_client_with_url_strict(hbb_common::UPDATE_KEYS_URL)?;
+    let keys: UpdateKeys = client
+        .get(hbb_common::UPDATE_KEYS_URL)
+        .send()?
+        .error_for_status()?
+        .json()?;
+    let key = keys
+        .keys
+        .into_iter()
+        .find(|key| key.id == target.signature_key_id)
+        .ok_or_else(|| anyhow::anyhow!("update signing key not found"))?;
+    if !key.key_type.is_empty() && key.key_type != "ed25519" {
+        bail!("unsupported update signature type: {}", key.key_type);
+    }
+    let public_key = decode_signature_value(&key.public_key)?;
+    let signature = decode_signature_value(&target.signature)?;
+    verify_detached_signature(data, &signature, &public_key)
+}
+
+fn verify_detached_signature(data: &[u8], signature: &[u8], public_key: &[u8]) -> ResultType<()> {
+    let public_key = hbb_common::sodiumoxide::crypto::sign::PublicKey::from_slice(&public_key)
+        .ok_or_else(|| anyhow::anyhow!("invalid update public key"))?;
+    let signature = hbb_common::sodiumoxide::crypto::sign::Signature::from_slice(&signature)
+        .ok_or_else(|| anyhow::anyhow!("invalid update signature"))?;
+    if !hbb_common::sodiumoxide::crypto::sign::verify_detached(&signature, data, &public_key) {
+        bail!("update signature verification failed");
+    }
+    Ok(())
+}
+
+fn download_and_verify(url: &str, target: &hbb_common::UpdateTarget) -> ResultType<PathBuf> {
+    let client = create_http_client_with_url_strict(url)?;
+    let Some(file_path) = get_download_file_from_url(url).or_else(|| {
+        let name = url::Url::parse(url).ok()?.path_segments()?.last()?.to_owned();
+        Some(std::env::temp_dir().join(name))
+    }) else { bail!("invalid update URL"); };
+    let response = client.get(url).send()?;
+    if !response.status().is_success() { bail!("download failed: {}", response.status()); }
+    let data = response.bytes()?;
+    if target.size != 0 && data.len() as u64 != target.size { bail!("size mismatch"); }
+    if !target.sha256.is_empty() {
+        let actual = hex::encode(Sha256::digest(&data));
+        if !actual.eq_ignore_ascii_case(&target.sha256) { bail!("sha256 mismatch"); }
+    }
+    verify_update_signature(&data, target)?;
+    let mut file = std::fs::File::create(&file_path)?;
+    file.write_all(&data)?;
+    Ok(file_path)
+}
+
+fn report_update_event(status: &str, version: &str, build_seq: u64, source: &str) {
+    let Ok(client) = create_http_client_with_url_strict("https://rdapi.yan.life/rd/update/v1/events") else { return; };
+    let payload = serde_json::json!({
+        "client_id": crate::get_app_name(),
+        "client_uuid": hex::encode(hbb_common::fingerprint::get_fingerprint(None, None)),
+        "status": status,
+        "from_version": crate::VERSION,
+        "from_build_seq": crate::BUILD_SEQ,
+        "product": crate::PRODUCT,
+        "edition": crate::EDITION,
+        "build_number": crate::BUILD_NUMBER,
+        "channel": crate::CHANNEL,
+        "source_commit": crate::SOURCE_COMMIT,
+        "to_version": version,
+        "to_build_seq": build_seq,
+        "error_code": if status == "failed" { "all_sources_failed" } else { "" },
+        "source": source,
+    });
+    let _ = client.post("https://rdapi.yan.life/rd/update/v1/events").json(&payload).send();
+}
+
+#[cfg(target_os = "linux")]
+fn install_linux_appimage(downloaded: &Path) -> ResultType<()> {
+    let current = std::env::current_exe()?;
+    let is_appimage = std::env::var_os("APPIMAGE").is_some()
+        || current.extension().and_then(|ext| ext.to_str()) == Some("AppImage");
+    if !is_appimage {
+        bail!("running executable is not an AppImage");
+    }
+    let backup = current.with_extension("old");
+    std::fs::remove_file(&backup).ok();
+    std::fs::rename(&current, &backup)?;
+    if let Err(err) = std::fs::rename(downloaded, &current) {
+        let _ = std::fs::rename(&backup, &current);
+        return Err(err.into());
+    }
+    if let Err(err) = std::fs::set_permissions(&current, std::fs::Permissions::from_mode(0o755)) {
+        let _ = std::fs::remove_file(&current);
+        let _ = std::fs::rename(&backup, &current);
+        return Err(err.into());
+    }
+    std::fs::remove_file(backup).ok();
+    Ok(())
+}
+
+#[cfg(target_os = "windows")]
+fn update_new_version(
+    update_msi: bool,
+    version: &str,
+    build_seq: u64,
+    source: &str,
+    file_path: &PathBuf,
+) {
     log::debug!(
         "New version is downloaded, update begin, update msi: {update_msi}, version: {version}, file: {:?}",
         file_path.to_str()
@@ -277,6 +407,7 @@ fn update_new_version(update_msi: bool, version: &str, file_path: &PathBuf) {
                 match crate::platform::update_me_msi(p, true) {
                     Ok(_) => {
                         log::debug!("New version \"{}\" updated.", version);
+                        report_update_event("installed", version, build_seq, source);
                     }
                     Err(e) => {
                         log::error!(
@@ -284,6 +415,7 @@ fn update_new_version(update_msi: bool, version: &str, file_path: &PathBuf) {
                             version,
                             e
                         );
+                        report_update_event("rolled_back", version, build_seq, source);
                         std::fs::remove_file(&file_path).ok();
                     }
                 }
@@ -317,14 +449,17 @@ fn update_new_version(update_msi: bool, version: &str, file_path: &PathBuf) {
                     Ok(h) => {
                         if h.is_null() {
                             log::error!("Failed to update to the new version: {}", version);
+                            report_update_event("rolled_back", version, build_seq, source);
                             false
                         } else {
                             log::debug!("New version \"{}\" is launched.", version);
+                            report_update_event("installed", version, build_seq, source);
                             true
                         }
                     }
                     Err(e) => {
                         log::error!("Failed to run the new version: {}", e);
+                        report_update_event("rolled_back", version, build_seq, source);
                         false
                     }
                 };
@@ -539,10 +674,6 @@ pub fn check_update_as_root() -> ResultType<bool> {
         log::info!("[root-update] Auto update is disabled, skipping.");
         return Ok(false);
     }
-    if crate::is_custom_client() {
-        log::info!("[root-update] Custom client detected, skipping stock update.");
-        return Ok(false);
-    }
     // Clean up only old temp dirs from previous failed updates. The detached
     // installer keeps using its update directory after this process exits and
     // releases the advisory lock, so a newly-started daemon must not remove a
@@ -580,22 +711,34 @@ pub fn check_update_as_root() -> ResultType<bool> {
     if let Err(e) = do_check_software_update() {
         bail!("[root-update] Failed to check for software update: {}", e);
     }
-    let update_url = crate::common::SOFTWARE_UPDATE_URL.lock().unwrap().clone();
-    if update_url.is_empty() {
+    let response = crate::common::SOFTWARE_UPDATE_RESPONSE.lock().unwrap().clone();
+    let Some(response) = response else {
         log::info!("[root-update] No update available.");
         return Ok(false);
-    }
-    let download_url = update_url.replace("tag", "download");
-    let version = download_url.split('/').last().unwrap_or_default().to_string();
-    let arch = if std::env::consts::ARCH == "aarch64" { "aarch64" } else { "x86_64" };
-    let dmg_url = format!("{}/rustdesk-{}-{}.dmg", download_url, version, arch);
-    log::info!("[root-update] New version: {}, downloading from {}", version, dmg_url);
-    // Validate URL against GitHub release allowlist before downloading as root
-    let Some(file_path_validated) = get_update_download_file_from_url(&dmg_url) else {
-        bail!("[root-update] URL failed allowlist check: {}", dmg_url);
     };
-    drop(file_path_validated);
-    let client = create_http_client_with_url_strict(&dmg_url)?;
+    let Some(manifest) = response.manifest else { return Ok(false); };
+    let target = manifest.targets.get(&current_update_target_key()).cloned();
+    let Some(target) = target else { return Ok(false); };
+    if response.mode == "disabled" || !response.update_available {
+        return Ok(false);
+    }
+    let version = manifest.version.clone();
+    report_update_event("started", &version, manifest.build_seq, "primary");
+    let mut download_urls = vec![(target.primary.clone(), "primary")];
+    download_urls.extend(target.mirrors.iter().cloned().map(|url| (url, "mirror")));
+    let mut downloaded = None;
+    for (url, source) in download_urls {
+        if url.is_empty() { continue; }
+        match download_and_verify(&url, &target) {
+            Ok(path) => { downloaded = Some((path, source)); break; }
+            Err(err) => log::warn!("[root-update] Update source failed: {}: {}", url, err),
+        }
+    }
+    let Some((file_path, source)) = downloaded else {
+        report_update_event("failed", &version, manifest.build_seq, "primary");
+        bail!("[root-update] All update sources failed");
+    };
+    report_update_event("downloaded", &version, manifest.build_seq, source);
     // Use mktemp so a local user cannot pre-create a predictable path and
     // permanently deny updates for a reused service PID.
     let private_tmp_output = std::process::Command::new("/usr/bin/mktemp")
@@ -618,25 +761,10 @@ pub fn check_update_as_root() -> ResultType<bool> {
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(&private_tmp, std::fs::Permissions::from_mode(0o700))?;
     }
-    let filename = dmg_url.split('/').last().unwrap_or("rustdesk.dmg");
-    let file_path = std::path::PathBuf::from(format!("{}/{}", private_tmp, filename));
-    let tmp_path = file_path.to_string_lossy().to_string();
-    // Download
-    let mut response = client.get(&dmg_url).send()?;
-    if !response.status().is_success() {
-        let _ = std::fs::remove_dir_all(&private_tmp);
-        bail!("[root-update] Failed to download: {}", response.status());
-    }
-    // Create file exclusively (O_EXCL) and stream response directly into it
-    {
-        let mut file = std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&file_path)
-            .map_err(|e| { let _ = std::fs::remove_dir_all(&private_tmp); e })?;
-        std::io::copy(&mut response, &mut file)
-            .map_err(|e| { let _ = std::fs::remove_dir_all(&private_tmp); e })?;
-    }
+    let filename = file_path.file_name().and_then(|name| name.to_str()).unwrap_or("rustdesk.dmg");
+    let staged_path = std::path::PathBuf::from(format!("{}/{}", private_tmp, filename));
+    std::fs::rename(&file_path, &staged_path)?;
+    let tmp_path = staged_path.to_string_lossy().to_string();
     log::info!("[root-update] Downloaded to {}", tmp_path);
     // Recheck active sessions before installing — download can take minutes
     if !has_no_active_conns_ipc() {
@@ -651,12 +779,21 @@ pub fn check_update_as_root() -> ResultType<bool> {
     if let Err(e) = std::fs::remove_dir_all(&private_tmp) {
         log::warn!("[root-update] Failed to remove temp dir {}: {}", private_tmp, e);
     }
-    result.map(|_| true)
+    match result {
+        Ok(_) => {
+            report_update_event("installed", &version, manifest.build_seq, source);
+            Ok(true)
+        }
+        Err(err) => {
+            report_update_event("rolled_back", &version, manifest.build_seq, source);
+            Err(err)
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::get_download_file_from_url;
+    use super::{get_download_file_from_url, verify_detached_signature};
 
     #[test]
     fn update_download_file_accepts_expected_github_asset_urls() {
@@ -688,5 +825,16 @@ mod tests {
         ] {
             assert!(get_download_file_from_url(url).is_none(), "{url}");
         }
+    }
+
+    #[test]
+    fn detached_update_signature_accepts_valid_bytes_and_rejects_tampering() {
+        let (public_key, secret_key) = hbb_common::sodiumoxide::crypto::sign::gen_keypair();
+        let data = b"rustdesk-yan update fixture";
+        let signature = hbb_common::sodiumoxide::crypto::sign::sign_detached(data, &secret_key);
+        assert!(verify_detached_signature(data, &signature, &public_key).is_ok());
+        assert!(verify_detached_signature(b"tampered", &signature, &public_key).is_err());
+        let (other_public_key, _) = hbb_common::sodiumoxide::crypto::sign::gen_keypair();
+        assert!(verify_detached_signature(data, &signature, &other_public_key).is_err());
     }
 }

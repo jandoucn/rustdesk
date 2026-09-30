@@ -44,7 +44,9 @@ class PeerTabModel with ChangeNotifier {
     !(bind.isDisableAb() || bind.isDisableAccount()),
     !(bind.isDisableGroupPanel() || bind.isDisableAccount()),
   ]);
-  final List<bool> _isVisible = List.filled(maxTabCount, true, growable: false);
+  final List<bool> _isVisible = List.from(
+      isDesktop ? [true, false, false, true, false] : [true, true, true, true, true],
+      growable: false);
   List<bool> get isVisibleEnabled => () {
         final list = _isVisible.toList();
         for (int i = 0; i < maxTabCount; i++) {
@@ -113,6 +115,25 @@ class PeerTabModel with ChangeNotifier {
         int.tryParse(bind.getLocalFlutterOption(k: kOptionPeerTabIndex)) ?? 0;
     if (_currentTab < 0 || _currentTab >= maxTabCount) {
       _currentTab = 0;
+    }
+    if (isDesktop) {
+      // The standard desktop layout intentionally exposes only these two tabs.
+      _isVisible
+        ..[0] = true
+        ..[1] = false
+        ..[2] = false
+        ..[3] = true
+        ..[4] = false;
+      orders
+        ..[0] = 0
+        ..[1] = 3
+        ..[2] = 1
+        ..[3] = 2
+        ..[4] = 4;
+      if (_currentTab != PeerTabIndex.recent.index &&
+          _currentTab != PeerTabIndex.ab.index) {
+        _currentTab = PeerTabIndex.recent.index;
+      }
     }
     _trySetCurrentTabToFirstVisibleEnabled();
   }
