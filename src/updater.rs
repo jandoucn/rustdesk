@@ -1,5 +1,8 @@
 use crate::{
-    common::{do_check_software_update, do_check_software_update_with_context_result},
+    common::{
+        do_check_software_update, do_check_software_update_with_context,
+        do_check_software_update_with_context_result,
+    },
     hbbs_http::create_http_client_with_url_strict,
 };
 #[cfg(target_os = "linux")]
