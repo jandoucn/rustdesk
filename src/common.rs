@@ -1039,6 +1039,12 @@ fn add_runtime_inventory_fields(out: &mut serde_json::Value) {
     out["build_seq"] = json!(crate::BUILD_SEQ);
     out["source_commit"] = json!(crate::SOURCE_COMMIT);
     out["channel"] = json!(crate::CHANNEL);
+    out["enable_check_update"] = json!(update_option_enabled(&LocalConfig::get_option(
+        keys::OPTION_ENABLE_CHECK_UPDATE,
+    )));
+    out["allow_auto_update"] = json!(update_option_enabled(&Config::get_option(
+        keys::OPTION_ALLOW_AUTO_UPDATE,
+    )));
     let (last_update_status, last_update_source) = SOFTWARE_UPDATE_RESPONSE
         .lock()
         .unwrap()

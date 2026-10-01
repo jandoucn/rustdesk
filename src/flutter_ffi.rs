@@ -1004,6 +1004,7 @@ pub fn main_get_error() -> String {
 }
 
 pub fn main_set_option(key: String, value: String) {
+    let is_auto_update_option = key.eq(keys::OPTION_ALLOW_AUTO_UPDATE);
     #[cfg(target_os = "android")]
     {
         let is_permission_option = key.eq(keys::OPTION_ENABLE_CLIPBOARD)
@@ -1060,6 +1061,9 @@ pub fn main_set_option(key: String, value: String) {
         crate::common::test_rendezvous_server();
     } else {
         set_option(key, value.clone());
+    }
+    if is_auto_update_option {
+        config::Status::set("sysinfo_hash", String::new());
     }
 }
 
@@ -1263,7 +1267,11 @@ pub fn main_set_env(key: String, value: Option<String>) -> SyncReturn<()> {
 pub fn main_set_local_option(key: String, value: String) {
     let is_texture_render_key = key.eq(keys::OPTION_TEXTURE_RENDER);
     let is_d3d_render_key = key.eq(keys::OPTION_ALLOW_D3D_RENDER);
+    let is_check_update_key = key.eq(keys::OPTION_ENABLE_CHECK_UPDATE);
     set_local_option(key, value.clone());
+    if is_check_update_key {
+        config::Status::set("sysinfo_hash", String::new());
+    }
     let is_render_target =
         |session: &crate::flutter::FlutterSession| session.is_default() || session.is_view_camera();
     if is_texture_render_key {

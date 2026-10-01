@@ -182,6 +182,7 @@ fn apply_update_policy(policy: UpdatePolicy) {
         keys::OPTION_UPDATE_POLICY_CLIENT_UUID.to_owned(),
         policy.client_uuid.clone(),
     );
+    config::Status::set("sysinfo_hash", String::new());
     crate::ui_interface::refresh_options();
     #[cfg(feature = "flutter")]
     {
