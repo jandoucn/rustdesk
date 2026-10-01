@@ -247,7 +247,7 @@ pub enum PolicyDecision {
 
 impl UpdatePolicy {
     pub fn decision(&self, applied_revision: Option<u64>) -> PolicyDecision {
-        if applied_revision.is_none_or(|revision| self.revision > revision) {
+        if applied_revision.map_or(true, |revision| self.revision > revision) {
             PolicyDecision::Apply
         } else {
             PolicyDecision::IgnoreStale
