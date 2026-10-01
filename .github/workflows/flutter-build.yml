@@ -18,6 +18,18 @@ on:
       platforms:
         type: string
         default: "all"
+      version:
+        type: string
+        default: "1.5.0"
+      build_number:
+        type: string
+        default: "20260930.5"
+      build_seq:
+        type: string
+        default: "2026093005"
+      publish_release_assets:
+        type: boolean
+        default: false
 
 # NOTE: F-Droid builder script 'flutter/build_fdroid.sh' reads environment
 # variables from this workflow!
@@ -54,12 +66,12 @@ env:
   VCPKG_COMMIT_ID: "9e593bb18ea69cc5095e012465dcd675a822ed0d"
   VCPKG_CMAKE_VERSION: "4.3.0"
   ARMV7_VCPKG_COMMIT_ID: "6f29f12e82a8293156836ad81cc9bf5af41fe836" # 2025.01.13, got "/opt/artifacts/vcpkg/vcpkg: No such file or directory" with latest version
-  VERSION: "1.5.0"
+  VERSION: "${{ inputs.version }}"
   # Release asset names must be unique when standard and SOS run together.
   EDITION: "${{ inputs.edition }}"
   PRODUCT: "rustdesk-yan"
-  BUILD_NUMBER: "20260930.5"
-  BUILD_SEQ: "2026093005"
+  BUILD_NUMBER: "${{ inputs.build_number }}"
+  BUILD_SEQ: "${{ inputs.build_seq }}"
   CHANNEL: "stable"
   RUSTDESK_SOS: ${{ inputs.edition == 'sos' && '1' || '' }}
   RUSTDESK_EDITION: ${{ inputs.edition }}
@@ -103,7 +115,7 @@ jobs:
 
   publish-release:
     # standard 负责创建共享 Release；SOS 只上传自己的资产，避免两个 edition 并发创建同一 Release。
-    if: inputs.upload-artifact && inputs.edition == 'standard'
+    if: inputs.publish_release_assets && inputs.upload-artifact && inputs.edition == 'standard'
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
@@ -366,6 +378,20 @@ jobs:
           name: ${{ matrix.job.arch == 'aarch64' && 'topmostwindow-artifacts-ARM64' || 'topmostwindow-artifacts-x64' }}
           path: "./rustdesk"
 
+      - name: Smoke test built Windows client
+        shell: pwsh
+        run: |
+          $started = Start-Process -FilePath "$PWD\rustdesk\rustdesk.exe" -PassThru
+          Start-Sleep -Seconds 15
+          $running = @(Get-Process -Name rustdesk -ErrorAction SilentlyContinue)
+          if ($running.Count -eq 0) {
+            if ($started.HasExited) {
+              throw "RustDesk exited during startup with code $($started.ExitCode)"
+            }
+            throw "RustDesk did not create a running desktop process"
+          }
+          $running | Stop-Process -Force
+
       - name: Upload unsigned
         if: env.UPLOAD_ARTIFACT == 'true'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -472,7 +498,7 @@ jobs:
 
       - name: Publish Release
         uses: softprops/action-gh-release@de2c0eb89ae2a093876385947365aca7b0e5f844 # v1
-        if: env.UPLOAD_ARTIFACT == 'true'
+        if: env.UPLOAD_ARTIFACT == 'true' && inputs.publish_release_assets
         with:
           prerelease: true
           tag_name: ${{ env.TAG_NAME }}
@@ -480,6 +506,16 @@ jobs:
           files: |
             ./SignOutput/rustdesk-*.msi
             ./SignOutput/rustdesk-*.exe
+
+      - name: Stage Windows release assets
+        if: env.UPLOAD_ARTIFACT == 'true'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-assets-${{ env.EDITION }}-windows-${{ matrix.job.arch }}
+          path: |
+            ./SignOutput/rustdesk-*.msi
+            ./SignOutput/rustdesk-*.exe
+          if-no-files-found: error
 
   # The fallback for the flutter version, we use Sciter for 32bit Windows.
   build-for-windows-sciter:
@@ -999,7 +1035,7 @@ jobs:
           fi
 
       - name: Publish DMG package
-        if: env.UPLOAD_ARTIFACT == 'true'
+        if: env.UPLOAD_ARTIFACT == 'true' && inputs.publish_release_assets
         uses: softprops/action-gh-release@de2c0eb89ae2a093876385947365aca7b0e5f844 # v1
         with:
           prerelease: true
@@ -1007,6 +1043,14 @@ jobs:
           name: ${{ inputs.release-name != '' && inputs.release-name || env.TAG_NAME }}
           files: |
             rustdesk*-${{ matrix.job.arch }}.dmg
+
+      - name: Stage macOS release assets
+        if: env.UPLOAD_ARTIFACT == 'true'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-assets-${{ env.EDITION }}-macos-${{ matrix.job.arch }}
+          path: rustdesk*-${{ matrix.job.arch }}.dmg
+          if-no-files-found: error
 
   publish_unsigned:
     needs:
@@ -1328,11 +1372,19 @@ jobs:
         if: env.ANDROID_SIGNING_KEY != null && env.UPLOAD_ARTIFACT == 'true'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: rustdesk-${{ env.VERSION }}-${{ env.EDITION }}-android-${{ matrix.job.arch }}.apk
+          name: release-assets-${{ env.EDITION }}-android-${{ matrix.job.arch }}
           path: ${{steps.sign-rustdesk.outputs.signedReleaseFile}}
 
+      - name: Upload unsigned Android release asset
+        if: env.ANDROID_SIGNING_KEY == null && env.UPLOAD_ARTIFACT == 'true'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-assets-${{ env.EDITION }}-android-${{ matrix.job.arch }}
+          path: signed-apk/rustdesk-${{ env.VERSION }}-${{ env.EDITION }}-android-${{ matrix.job.arch }}.apk
+          if-no-files-found: error
+
       - name: Publish signed apk package
-        if: env.ANDROID_SIGNING_KEY != null && env.UPLOAD_ARTIFACT == 'true'
+        if: env.ANDROID_SIGNING_KEY != null && env.UPLOAD_ARTIFACT == 'true' && inputs.publish_release_assets
         uses: softprops/action-gh-release@de2c0eb89ae2a093876385947365aca7b0e5f844 # v1
         with:
           prerelease: true
@@ -1342,7 +1394,7 @@ jobs:
             ${{steps.sign-rustdesk.outputs.signedReleaseFile}}
 
       - name: Publish unsigned apk package
-        if: env.ANDROID_SIGNING_KEY == null && env.UPLOAD_ARTIFACT == 'true'
+        if: env.ANDROID_SIGNING_KEY == null && env.UPLOAD_ARTIFACT == 'true' && inputs.publish_release_assets
         uses: softprops/action-gh-release@de2c0eb89ae2a093876385947365aca7b0e5f844 # v1
         with:
           prerelease: true

@@ -62,6 +62,15 @@ void main() {
     expect(shouldCheckSoftwareUpdateOnStartup('Y'), isTrue);
   });
 
+  test('scheduled update interval defaults to five hours and stays bounded',
+      () {
+    expect(scheduledUpdateIntervalHours(''), 5);
+    expect(scheduledUpdateIntervalHours('invalid'), 5);
+    expect(scheduledUpdateIntervalHours('0'), 1);
+    expect(scheduledUpdateIntervalHours('169'), 168);
+    expect(scheduledUpdateIntervalHours('12'), 12);
+  });
+
   test('update check result exposes server version metadata', () {
     final state = UpdateUiState();
 
@@ -106,6 +115,22 @@ void main() {
     );
   });
 
+  test('manual update checks always resolve to a visible dialog result', () {
+    expect(
+      manualUpdateResultKind(
+          error: '', updateUrl: 'https://example.test/app.exe'),
+      ManualUpdateResultKind.updateAvailable,
+    );
+    expect(
+      manualUpdateResultKind(error: '', updateUrl: ''),
+      ManualUpdateResultKind.upToDate,
+    );
+    expect(
+      manualUpdateResultKind(error: 'network failed', updateUrl: ''),
+      ManualUpdateResultKind.error,
+    );
+  });
+
   test('manual update result only matches the request that started it', () {
     expect(
       isMatchingManualUpdateCheck(
@@ -147,6 +172,8 @@ void main() {
       (tester) async {
     var startup = false;
     var automatic = false;
+    var scheduled = false;
+    var intervalHours = 5;
     var checks = 0;
 
     await tester.pumpWidget(MaterialApp(
@@ -158,8 +185,13 @@ void main() {
           checking: true,
           checkOnStartup: startup,
           autoUpdate: automatic,
+          scheduledUpdate: scheduled,
+          scheduledUpdateIntervalHours: intervalHours,
           onCheckOnStartupChanged: (value) async => startup = value,
           onAutoUpdateChanged: (value) async => automatic = value,
+          onScheduledUpdateChanged: (value) async => scheduled = value,
+          onScheduledUpdateIntervalChanged: (value) async =>
+              intervalHours = value,
           onCheckUpdate: () async => checks++,
           translator: (value) => value,
         ),
@@ -170,6 +202,9 @@ void main() {
     expect(find.textContaining('1.5.0'), findsOneWidget);
     expect(find.text('Check for software update on startup'), findsOneWidget);
     expect(find.text('Auto update'), findsOneWidget);
+    expect(
+        find.text('Check for software updates periodically'), findsOneWidget);
+    expect(find.text('5 hours'), findsOneWidget);
     expect(find.text('Check for updates'), findsOneWidget);
 
     final checkButton = tester.widget<OutlinedButton>(
@@ -181,8 +216,14 @@ void main() {
     await tester.pump();
     await tester.tap(find.text('Auto update'));
     await tester.pump();
+    await tester.tap(find.text('Check for software updates periodically'));
+    await tester.pump();
+    await tester.tap(find.byKey(const ValueKey('scheduled-update-increment')));
+    await tester.pump();
     expect(startup, isTrue);
     expect(automatic, isTrue);
+    expect(scheduled, isTrue);
+    expect(intervalHours, 6);
     expect(checks, 0);
   });
 }

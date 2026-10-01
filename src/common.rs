@@ -1045,6 +1045,15 @@ fn add_runtime_inventory_fields(out: &mut serde_json::Value) {
     out["allow_auto_update"] = json!(update_option_enabled(&Config::get_option(
         keys::OPTION_ALLOW_AUTO_UPDATE,
     )));
+    out["enable_scheduled_update"] = json!(update_option_enabled(&Config::get_option(
+        keys::OPTION_ENABLE_SCHEDULED_UPDATE,
+    )));
+    out["scheduled_update_interval_hours"] = json!(Config::get_option(
+        keys::OPTION_SCHEDULED_UPDATE_INTERVAL_HOURS,
+    )
+    .parse::<u64>()
+    .map(base::update::normalize_scheduled_update_interval_hours)
+    .unwrap_or(base::update::DEFAULT_SCHEDULED_UPDATE_INTERVAL_HOURS));
     let (last_update_status, last_update_source) = SOFTWARE_UPDATE_RESPONSE
         .lock()
         .unwrap()
@@ -4256,6 +4265,10 @@ mod tests {
             assert!(payload[key].is_string(), "missing string field {key}");
         }
         assert!(payload["network"]["private_ips"].is_array());
+        assert!(payload["enable_check_update"].is_boolean());
+        assert!(payload["allow_auto_update"].is_boolean());
+        assert!(payload["enable_scheduled_update"].is_boolean());
+        assert!(payload["scheduled_update_interval_hours"].is_u64());
         assert_eq!(payload["schema_version"], 1);
         assert!(payload["capabilities"].is_array());
         assert!(payload["extensions"].is_object());

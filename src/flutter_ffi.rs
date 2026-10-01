@@ -49,7 +49,7 @@ fn initialize(app_dir: &str, custom_client_config: &str) {
         crate::read_custom_client(custom_client_config);
     }
     #[cfg(not(any(target_os = "android", target_os = "ios")))]
-    crate::updater::start_update_policy_stream();
+    crate::updater::start_auto_update();
     #[cfg(target_os = "android")]
     {
         // flexi_logger can't work when android_logger initialized.
@@ -1005,6 +1005,8 @@ pub fn main_get_error() -> String {
 
 pub fn main_set_option(key: String, value: String) {
     let is_auto_update_option = key.eq(keys::OPTION_ALLOW_AUTO_UPDATE);
+    let is_update_schedule_option = key.eq(keys::OPTION_ENABLE_SCHEDULED_UPDATE)
+        || key.eq(keys::OPTION_SCHEDULED_UPDATE_INTERVAL_HOURS);
     #[cfg(target_os = "android")]
     {
         let is_permission_option = key.eq(keys::OPTION_ENABLE_CLIPBOARD)
@@ -1063,6 +1065,10 @@ pub fn main_set_option(key: String, value: String) {
         set_option(key, value.clone());
     }
     if is_auto_update_option {
+        config::Status::set("sysinfo_hash", String::new());
+    }
+    if is_update_schedule_option {
+        crate::updater::update_schedule_changed();
         config::Status::set("sysinfo_hash", String::new());
     }
 }

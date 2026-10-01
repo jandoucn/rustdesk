@@ -790,6 +790,12 @@ pub static ref T: std::collections::HashMap<&'static str, &'static str> =
         ("Checking for updates", "正在检查更新"),
         ("Update available", "发现新版本"),
         ("Up to date", "已是最新版本"),
-        ("A new version is available. Update now?", "发现新版本，是否立即更新？")
+        ("A new version is available. Update now?", "发现新版本，是否立即更新？"),
+        ("Expand", "展开"),
+        ("Collapse", "折叠"),
+        ("Software update", "软件更新"),
+        ("Check for software updates periodically", "定时检查软件更新"),
+        ("Update check interval", "更新检查间隔"),
+        ("hours", "小时")
     ].iter().cloned().collect();
 }

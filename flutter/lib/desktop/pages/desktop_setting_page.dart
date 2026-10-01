@@ -61,6 +61,17 @@ enum SettingsTabKey {
 
 bool showRecordingSettingsForEdition({required bool sosMode}) => sosMode;
 
+enum ManualUpdateResultKind { updateAvailable, upToDate, error }
+
+ManualUpdateResultKind manualUpdateResultKind({
+  required String error,
+  required String updateUrl,
+}) {
+  if (error.isNotEmpty) return ManualUpdateResultKind.error;
+  if (updateUrl.isNotEmpty) return ManualUpdateResultKind.updateAvailable;
+  return ManualUpdateResultKind.upToDate;
+}
+
 class DesktopSettingPage extends StatefulWidget {
   final SettingsTabKey initialTabkey;
   static final List<SettingsTabKey> tabKeys = [
@@ -2513,10 +2524,10 @@ class _AboutState extends State<_About> {
         return;
       }
       setState(() => _manualCheckRequestId = '');
-      final url = updateUiState.updateUrl.value;
-      if (url.isNotEmpty) {
-        _showUpdateConfirmation(url);
-      }
+      _showManualUpdateResult(
+        url: updateUiState.updateUrl.value,
+        error: updateUiState.error.value,
+      );
     });
   }
 
@@ -2547,6 +2558,35 @@ class _AboutState extends State<_About> {
     if (accepted == true) {
       handleUpdate(url);
     }
+  }
+
+  Future<void> _showManualUpdateResult({
+    required String url,
+    required String error,
+  }) async {
+    final kind = manualUpdateResultKind(error: error, updateUrl: url);
+    if (kind == ManualUpdateResultKind.updateAvailable) {
+      await _showUpdateConfirmation(url);
+      return;
+    }
+    if (!mounted) return;
+    await showDialog<void>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Text(translate('Software update')),
+        content: Text(
+          kind == ManualUpdateResultKind.error
+              ? error
+              : translate('Up to date'),
+        ),
+        actions: [
+          FilledButton(
+            onPressed: () => Navigator.pop(context),
+            child: Text(translate('OK')),
+          ),
+        ],
+      ),
+    );
   }
 
   Future<void> _checkForUpdates() async {
@@ -2639,10 +2679,23 @@ class _AboutState extends State<_About> {
                     checkOnStartup:
                         mainGetLocalBoolOptionSync(kOptionEnableCheckUpdate),
                     autoUpdate: mainGetBoolOptionSync(kOptionAllowAutoUpdate),
+                    scheduledUpdate:
+                        mainGetBoolOptionSync(kOptionEnableScheduledUpdate),
+                    scheduledUpdateIntervalHours: scheduledUpdateIntervalHours(
+                      bind.mainGetOptionSync(
+                          key: kOptionScheduledUpdateIntervalHours),
+                    ),
                     onCheckOnStartupChanged: (value) =>
                         mainSetLocalBoolOption(kOptionEnableCheckUpdate, value),
                     onAutoUpdateChanged: (value) =>
                         mainSetBoolOption(kOptionAllowAutoUpdate, value),
+                    onScheduledUpdateChanged: (value) =>
+                        mainSetBoolOption(kOptionEnableScheduledUpdate, value),
+                    onScheduledUpdateIntervalChanged: (value) =>
+                        bind.mainSetOption(
+                      key: kOptionScheduledUpdateIntervalHours,
+                      value: '$value',
+                    ),
                     onCheckUpdate: _checkForUpdates,
                   ).marginSymmetric(vertical: 8);
                 }),
@@ -2707,8 +2760,12 @@ class StandardAboutUpdateControls extends StatefulWidget {
   final bool checking;
   final bool checkOnStartup;
   final bool autoUpdate;
+  final bool scheduledUpdate;
+  final int scheduledUpdateIntervalHours;
   final Future<void> Function(bool) onCheckOnStartupChanged;
   final Future<void> Function(bool) onAutoUpdateChanged;
+  final Future<void> Function(bool) onScheduledUpdateChanged;
+  final Future<void> Function(int) onScheduledUpdateIntervalChanged;
   final Future<void> Function() onCheckUpdate;
   final String Function(String)? translator;
 
@@ -2723,8 +2780,12 @@ class StandardAboutUpdateControls extends StatefulWidget {
     this.checking = false,
     required this.checkOnStartup,
     required this.autoUpdate,
+    required this.scheduledUpdate,
+    required this.scheduledUpdateIntervalHours,
     required this.onCheckOnStartupChanged,
     required this.onAutoUpdateChanged,
+    required this.onScheduledUpdateChanged,
+    required this.onScheduledUpdateIntervalChanged,
     required this.onCheckUpdate,
     this.translator,
   });
@@ -2738,12 +2799,16 @@ class _StandardAboutUpdateControlsState
     extends State<StandardAboutUpdateControls> {
   late bool _checkOnStartup;
   late bool _autoUpdate;
+  late bool _scheduledUpdate;
+  late int _scheduledUpdateIntervalHours;
 
   @override
   void initState() {
     super.initState();
     _checkOnStartup = widget.checkOnStartup;
     _autoUpdate = widget.autoUpdate;
+    _scheduledUpdate = widget.scheduledUpdate;
+    _scheduledUpdateIntervalHours = widget.scheduledUpdateIntervalHours;
   }
 
   @override
@@ -2755,6 +2820,13 @@ class _StandardAboutUpdateControlsState
     if (oldWidget.autoUpdate != widget.autoUpdate) {
       _autoUpdate = widget.autoUpdate;
     }
+    if (oldWidget.scheduledUpdate != widget.scheduledUpdate) {
+      _scheduledUpdate = widget.scheduledUpdate;
+    }
+    if (oldWidget.scheduledUpdateIntervalHours !=
+        widget.scheduledUpdateIntervalHours) {
+      _scheduledUpdateIntervalHours = widget.scheduledUpdateIntervalHours;
+    }
   }
 
   Future<void> _setCheckOnStartup(bool value) async {
@@ -2765,6 +2837,19 @@ class _StandardAboutUpdateControlsState
   Future<void> _setAutoUpdate(bool value) async {
     await widget.onAutoUpdateChanged(value);
     if (mounted) setState(() => _autoUpdate = value);
+  }
+
+  Future<void> _setScheduledUpdate(bool value) async {
+    await widget.onScheduledUpdateChanged(value);
+    if (mounted) setState(() => _scheduledUpdate = value);
+  }
+
+  Future<void> _setScheduledUpdateInterval(int value) async {
+    final normalized = scheduledUpdateIntervalHours(value);
+    await widget.onScheduledUpdateIntervalChanged(normalized);
+    if (mounted) {
+      setState(() => _scheduledUpdateIntervalHours = normalized);
+    }
   }
 
   String _translate(String value) =>
@@ -2809,6 +2894,48 @@ class _StandardAboutUpdateControlsState
           onChanged: (value) {
             if (value != null) _setAutoUpdate(value);
           },
+        ),
+        CheckboxListTile(
+          contentPadding: EdgeInsets.zero,
+          controlAffinity: ListTileControlAffinity.leading,
+          dense: true,
+          title: Text(_translate('Check for software updates periodically')),
+          value: _scheduledUpdate,
+          onChanged: (value) {
+            if (value != null) _setScheduledUpdate(value);
+          },
+        ),
+        Row(
+          children: [
+            Text(_translate('Update check interval')),
+            const Spacer(),
+            IconButton(
+              key: const ValueKey('scheduled-update-decrement'),
+              tooltip: _translate('Decrease'),
+              onPressed: _scheduledUpdate && _scheduledUpdateIntervalHours > 1
+                  ? () => _setScheduledUpdateInterval(
+                      _scheduledUpdateIntervalHours - 1)
+                  : null,
+              icon: const Icon(Icons.remove),
+            ),
+            SizedBox(
+              width: 72,
+              child: Text(
+                '$_scheduledUpdateIntervalHours ${_translate('hours')}',
+                textAlign: TextAlign.center,
+              ),
+            ),
+            IconButton(
+              key: const ValueKey('scheduled-update-increment'),
+              tooltip: _translate('Increase'),
+              onPressed:
+                  _scheduledUpdate && _scheduledUpdateIntervalHours < 168
+                      ? () => _setScheduledUpdateInterval(
+                          _scheduledUpdateIntervalHours + 1)
+                      : null,
+              icon: const Icon(Icons.add),
+            ),
+          ],
         ),
         OutlinedButton.icon(
           onPressed: widget.checking ? null : widget.onCheckUpdate,

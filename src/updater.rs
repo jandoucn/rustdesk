@@ -7,13 +7,15 @@ use base::update::replace_file_transaction;
 use base::{
     config::keys,
     update::{
-        classify_update_preinstall_failure, decide_update_action, parse_update_stream_sse_event,
-        policy_resume_revision, should_run_scheduled_update, try_update_sources,
-        update_client_identity, update_option_enabled, update_policy_stream_url,
-        update_signature_payload, update_target_key, validate_manifest_contract,
-        validate_target_metadata, PendingUpdateEvent, PolicyDecision, ProcessedUpdateCommands,
-        UpdateAction, UpdateCommand, UpdateCommandAction, UpdateCommandDecision,
-        UpdateCommandState, UpdatePolicy, UpdateSource, UpdateStreamEvent,
+        classify_update_preinstall_failure, decide_update_action,
+        normalize_scheduled_update_interval_hours, parse_update_stream_sse_event,
+        policy_resume_revision, should_run_scheduled_update, should_run_startup_update,
+        try_update_sources, update_client_identity, update_option_enabled,
+        update_policy_stream_url, update_signature_payload, update_target_key,
+        validate_manifest_contract, validate_target_metadata, PendingUpdateEvent, PolicyDecision,
+        ProcessedUpdateCommands, UpdateAction, UpdateCommand, UpdateCommandAction,
+        UpdateCommandDecision, UpdateCommandState, UpdatePolicy, UpdateSource, UpdateStreamEvent,
+        DEFAULT_SCHEDULED_UPDATE_INTERVAL_HOURS,
     },
 };
 use hbb_common::base64::{
@@ -45,6 +47,8 @@ use std::os::unix::fs::MetadataExt;
 
 enum UpdateMsg {
     CheckUpdate,
+    ConnectivityRestored,
+    ScheduleChanged,
     Command(UpdateCommand),
     Exit,
 }
@@ -59,7 +63,7 @@ static POLICY_STREAM_STARTED: AtomicBool = AtomicBool::new(false);
 /// Initial wait after startup before the first update check (30 seconds).
 pub const INITIAL_CHECK_DELAY: Duration = Duration::from_secs(30);
 
-/// One full day — default interval between update checks.
+/// Legacy macOS root updater interval.
 pub const DUR_ONE_DAY: Duration = Duration::from_secs(60 * 60 * 24);
 
 /// Minimum interval between consecutive update checks (10 minutes).
@@ -70,6 +74,7 @@ pub const RETRY_INTERVAL: Duration = Duration::from_secs(60 * 30);
 pub const POLICY_EOF_RECONNECT_DELAY: Duration = Duration::from_secs(1);
 pub const POLICY_ERROR_RECONNECT_DELAY: Duration = Duration::from_secs(2);
 const UPDATE_COMMAND_RETRY_INTERVAL: Duration = Duration::from_secs(30);
+const DEFERRED_UPDATE_RETRY_INTERVAL: Duration = Duration::from_secs(30);
 
 pub(crate) struct UpdateDeviceAuthHeaders {
     pub device_id: String,
@@ -123,6 +128,11 @@ pub fn start_auto_update() {
     let _sender = TX_MSG.lock().unwrap();
 }
 
+pub fn update_schedule_changed() {
+    let sender = TX_MSG.lock().unwrap();
+    let _ = sender.send(UpdateMsg::ScheduleChanged);
+}
+
 pub fn start_update_policy_stream() {
     if POLICY_STREAM_STARTED.swap(true, Ordering::SeqCst) {
         return;
@@ -166,6 +176,9 @@ fn apply_update_policy(policy: UpdatePolicy) {
     }
     let check_value = if policy.check_on_startup { "Y" } else { "N" };
     let auto_value = if policy.auto_update { "Y" } else { "N" };
+    let scheduled_value = if policy.scheduled_update { "Y" } else { "N" };
+    let scheduled_hours =
+        normalize_scheduled_update_interval_hours(policy.scheduled_update_interval_hours);
     config::LocalConfig::set_option(
         keys::OPTION_ENABLE_CHECK_UPDATE.to_owned(),
         check_value.to_owned(),
@@ -173,6 +186,14 @@ fn apply_update_policy(policy: UpdatePolicy) {
     config::Config::set_option(
         keys::OPTION_ALLOW_AUTO_UPDATE.to_owned(),
         auto_value.to_owned(),
+    );
+    config::Config::set_option(
+        keys::OPTION_ENABLE_SCHEDULED_UPDATE.to_owned(),
+        scheduled_value.to_owned(),
+    );
+    config::Config::set_option(
+        keys::OPTION_SCHEDULED_UPDATE_INTERVAL_HOURS.to_owned(),
+        scheduled_hours.to_string(),
     );
     config::Config::set_option(
         keys::OPTION_UPDATE_POLICY_REVISION.to_owned(),
@@ -190,24 +211,42 @@ fn apply_update_policy(policy: UpdatePolicy) {
             "name": "update_policy_changed",
             "enable_check_update": policy.check_on_startup,
             "allow_auto_update": policy.auto_update,
+            "enable_scheduled_update": policy.scheduled_update,
+            "scheduled_update_interval_hours": scheduled_hours,
             "policy_revision": policy.revision,
         });
         let _ = crate::flutter::push_global_event(crate::flutter::APP_TYPE_MAIN, event.to_string());
     }
+    update_schedule_changed();
+}
+
+fn notify_update_connectivity_restored() {
+    let sender = TX_MSG.lock().unwrap();
+    let _ = sender.send(UpdateMsg::ConnectivityRestored);
 }
 
 fn update_policy_stream_loop() {
     const POLICY_BASE_URL: &str = "https://rdapi.yan.life";
+    let mut connection_seen = false;
     loop {
         let identity = current_update_client_identity();
         let revision = applied_policy_revision(&identity);
+        let notify_on_connect = connection_seen;
         let result = read_update_policy_stream_once(
             POLICY_BASE_URL,
             &identity,
             revision,
+            || {
+                if notify_on_connect {
+                    notify_update_connectivity_restored();
+                }
+            },
             apply_update_policy,
             enqueue_update_command,
         );
+        if result.is_ok() {
+            connection_seen = true;
+        }
         let reconnect_delay = match result {
             Ok(()) => POLICY_EOF_RECONNECT_DELAY,
             Err(err) => {
@@ -223,6 +262,7 @@ fn read_update_policy_stream_once(
     base_url: &str,
     identity: &base::update::UpdateClientIdentity,
     revision: Option<u64>,
+    mut on_connected: impl FnMut(),
     mut on_policy: impl FnMut(UpdatePolicy),
     mut on_command: impl FnMut(UpdateCommand),
 ) -> ResultType<()> {
@@ -262,6 +302,7 @@ fn read_update_policy_stream_once(
         (response, true)
     };
     let response = response.error_for_status()?;
+    on_connected();
     let mut reader = BufReader::new(response);
     let mut event = String::new();
     loop {
@@ -487,7 +528,10 @@ mod policy_stream_tests {
     use std::{
         io::{Read, Write},
         net::TcpListener,
-        sync::mpsc,
+        sync::{
+            atomic::{AtomicBool, Ordering},
+            mpsc, Arc,
+        },
         thread,
     };
 
@@ -525,6 +569,7 @@ mod policy_stream_tests {
             &format!("http://{address}"),
             &identity,
             Some(3),
+            || {},
             |policy| tx.send(policy).expect("policy should send"),
             |_| {},
         )
@@ -556,11 +601,14 @@ mod policy_stream_tests {
             request
         });
         let identity = update_client_identity("01ab");
+        let connected = Arc::new(AtomicBool::new(false));
+        let connected_for_callback = Arc::clone(&connected);
 
         read_update_policy_stream_once(
             &format!("http://{address}"),
             &identity,
             None,
+            move || connected_for_callback.store(true, Ordering::SeqCst),
             |_| {},
             |_| {},
         )
@@ -572,6 +620,7 @@ mod policy_stream_tests {
         ));
         assert!(!request.to_ascii_lowercase().contains("last-event-id:"));
         assert!(!request.contains("after_revision="));
+        assert!(connected.load(Ordering::SeqCst));
     }
 
     #[test]
@@ -620,6 +669,7 @@ mod policy_stream_tests {
             &format!("http://{address}"),
             &identity,
             None,
+            || {},
             |policy| tx.send(policy).expect("policy should send"),
             |command| command_tx.send(command).expect("command should send"),
         )
@@ -667,6 +717,7 @@ mod policy_stream_tests {
             &format!("http://{address}"),
             &identity,
             Some(3),
+            || {},
             |_| {},
             |command| tx.send(command).expect("command should send"),
         )
@@ -694,6 +745,7 @@ mod policy_stream_tests {
 
     #[test]
     fn only_install_commands_defer_for_active_sessions() {
+        assert!(DEFERRED_UPDATE_RETRY_INTERVAL <= Duration::from_secs(30));
         assert!(!update_command_should_defer(
             UpdateCommandAction::Check,
             true
@@ -838,69 +890,73 @@ fn start_auto_update_check() -> Sender<UpdateMsg> {
 }
 
 fn start_auto_update_check_(rx_msg: Receiver<UpdateMsg>) {
-    let mut last_check_time = Instant::now();
-    let mut check_interval = INITIAL_CHECK_DELAY;
-    let mut first_scheduled_check = true;
+    let started_at = Instant::now();
+    let mut startup_check_pending = true;
+    let mut last_check_time = None;
+    let mut next_scheduled_check = scheduled_update_interval().map(|value| started_at + value);
     loop {
-        let recv_res = rx_msg.recv_timeout(check_interval);
-        match &recv_res {
-            Ok(UpdateMsg::CheckUpdate) | Err(_) => {
-                let manually = matches!(recv_res, Ok(UpdateMsg::CheckUpdate));
-                if !manually && !first_scheduled_check && last_check_time.elapsed() < MIN_INTERVAL {
-                    // log::debug!("Update check skipped due to minimum interval.");
-                    continue;
+        let now = Instant::now();
+        let startup_deadline = startup_check_pending.then_some(started_at + INITIAL_CHECK_DELAY);
+        let next_deadline = [startup_deadline, next_scheduled_check]
+            .into_iter()
+            .flatten()
+            .min();
+        let wait = next_deadline
+            .map(|deadline| deadline.saturating_duration_since(now))
+            .unwrap_or(Duration::from_secs(60 * 60 * 24));
+        match rx_msg.recv_timeout(wait) {
+            Ok(UpdateMsg::CheckUpdate) => {
+                run_update_check(true, &mut last_check_time, &mut next_scheduled_check);
+            }
+            Ok(UpdateMsg::ConnectivityRestored) => {
+                if last_check_time
+                    .map(|value: Instant| value.elapsed() >= MIN_INTERVAL)
+                    .unwrap_or(true)
+                {
+                    run_update_check(false, &mut last_check_time, &mut next_scheduled_check);
                 }
-                // Don't check update if there are alive connections.
-                if !has_no_active_conns() {
-                    check_interval = RETRY_INTERVAL;
-                    continue;
-                }
-                if let Err(e) = check_update(manually) {
-                    log::error!("Error checking for updates: {}", e);
-                    check_interval = RETRY_INTERVAL;
-                } else {
-                    last_check_time = Instant::now();
-                    check_interval = DUR_ONE_DAY;
-                }
-                first_scheduled_check = false;
+            }
+            Ok(UpdateMsg::ScheduleChanged) => {
+                next_scheduled_check =
+                    scheduled_update_interval().map(|value| Instant::now() + value);
             }
             Ok(UpdateMsg::Command(command)) => {
                 let identity = current_update_client_identity();
                 let history = load_processed_update_commands();
                 match command.accepted_decision(&identity, history.contains(&command.command_id)) {
-                    UpdateCommandDecision::IdentityMismatch => complete_update_command(command),
-                    UpdateCommandDecision::Duplicate => complete_update_command(command),
+                    UpdateCommandDecision::IdentityMismatch => complete_update_command(&command),
+                    UpdateCommandDecision::Duplicate => complete_update_command(&command),
                     UpdateCommandDecision::Expired | UpdateCommandDecision::Execute => {
                         if update_command_should_defer(command.action, !has_no_active_conns()) {
-                            report_update_command_deferred_once(command);
+                            report_update_command_deferred_once(&command);
                             schedule_update_command_retry(command.clone());
                             continue;
                         }
-                        report_update_command_event(command, "started", "");
-                        let result = check_update_for_command(command);
+                        report_update_command_event(&command, "started", "");
+                        let result = check_update_for_command(&command);
                         match result {
                             Ok(UpdateCommandRunOutcome::NoUpdate) => {
                                 persist_and_report_update_command_terminal(
-                                    command,
+                                    &command,
                                     "no_update",
                                     "",
                                 );
                             }
                             Ok(UpdateCommandRunOutcome::CheckCompleted) => {
                                 persist_and_report_update_command_terminal(
-                                    command,
+                                    &command,
                                     "completed",
                                     "",
                                 );
                             }
                             Ok(UpdateCommandRunOutcome::Deferred) => {
-                                report_update_command_deferred_once(command);
+                                report_update_command_deferred_once(&command);
                                 schedule_update_command_retry(command.clone());
                             }
                             Ok(UpdateCommandRunOutcome::AwaitingInstallResult) => {}
                             Ok(UpdateCommandRunOutcome::Installed) => {
                                 persist_and_report_update_command_terminal(
-                                    command,
+                                    &command,
                                     "completed",
                                     "",
                                 );
@@ -908,7 +964,7 @@ fn start_auto_update_check_(rx_msg: Receiver<UpdateMsg>) {
                             Err(err) => {
                                 log::error!("Update command {} failed: {err}", command.command_id);
                                 persist_and_report_update_command_terminal(
-                                    command,
+                                    &command,
                                     "failed",
                                     "command_failed",
                                 );
@@ -918,8 +974,78 @@ fn start_auto_update_check_(rx_msg: Receiver<UpdateMsg>) {
                 }
             }
             Ok(UpdateMsg::Exit) => break,
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                let now = Instant::now();
+                let startup_due =
+                    startup_check_pending && now.duration_since(started_at) >= INITIAL_CHECK_DELAY;
+                if startup_due {
+                    startup_check_pending = false;
+                }
+                let scheduled_due = next_scheduled_check
+                    .map(|deadline| now >= deadline)
+                    .unwrap_or(false);
+                if (startup_due && startup_update_enabled()) || scheduled_due {
+                    run_update_check(false, &mut last_check_time, &mut next_scheduled_check);
+                }
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
         }
     }
+}
+
+fn startup_update_enabled() -> bool {
+    should_run_startup_update(update_option_enabled(&config::LocalConfig::get_option(
+        keys::OPTION_ENABLE_CHECK_UPDATE,
+    )))
+}
+
+fn scheduled_update_interval() -> Option<Duration> {
+    if !should_run_scheduled_update(update_option_enabled(&config::Config::get_option(
+        keys::OPTION_ENABLE_SCHEDULED_UPDATE,
+    ))) {
+        return None;
+    }
+    let hours = config::Config::get_option(keys::OPTION_SCHEDULED_UPDATE_INTERVAL_HOURS)
+        .parse()
+        .unwrap_or(DEFAULT_SCHEDULED_UPDATE_INTERVAL_HOURS);
+    Some(Duration::from_secs(
+        normalize_scheduled_update_interval_hours(hours) * 60 * 60,
+    ))
+}
+
+fn run_update_check(
+    manually: bool,
+    last_check_time: &mut Option<Instant>,
+    next_scheduled_check: &mut Option<Instant>,
+) {
+    match check_update_request(manually, None) {
+        Ok(UpdateCommandRunOutcome::Deferred) => {
+            *next_scheduled_check = Some(Instant::now() + DEFERRED_UPDATE_RETRY_INTERVAL);
+            schedule_update_check_retry(manually, DEFERRED_UPDATE_RETRY_INTERVAL);
+        }
+        Ok(_) => {
+            *last_check_time = Some(Instant::now());
+            *next_scheduled_check = scheduled_update_interval().map(|value| Instant::now() + value);
+        }
+        Err(err) => {
+            log::error!("Error checking for updates: {err}");
+            *next_scheduled_check = Some(Instant::now() + RETRY_INTERVAL);
+            schedule_update_check_retry(manually, RETRY_INTERVAL);
+        }
+    }
+}
+
+fn schedule_update_check_retry(manually: bool, delay: Duration) {
+    std::thread::spawn(move || {
+        std::thread::sleep(delay);
+        let sender = TX_MSG.lock().unwrap();
+        let message = if manually {
+            UpdateMsg::CheckUpdate
+        } else {
+            UpdateMsg::ConnectivityRestored
+        };
+        let _ = sender.send(message);
+    });
 }
 
 fn schedule_update_command_retry(command: UpdateCommand) {
@@ -928,10 +1054,6 @@ fn schedule_update_command_retry(command: UpdateCommand) {
         let sender = TX_MSG.lock().unwrap();
         let _ = sender.send(UpdateMsg::Command(command));
     });
-}
-
-fn check_update(manually: bool) -> ResultType<()> {
-    check_update_request(manually, None).map(|_| ())
 }
 
 fn check_update_for_command(command: &UpdateCommand) -> ResultType<UpdateCommandRunOutcome> {
@@ -946,17 +1068,6 @@ fn check_update_request(
     // The shared check_update() path is only used for manual update checks from the GUI.
     #[cfg(target_os = "macos")]
     if !manually && command.is_none() {
-        return Ok(UpdateCommandRunOutcome::NoUpdate);
-    }
-    if !manually
-        && command.is_none()
-        && !should_run_scheduled_update(
-            update_option_enabled(&config::LocalConfig::get_option(
-                keys::OPTION_ENABLE_CHECK_UPDATE,
-            )),
-            update_option_enabled(&config::Config::get_option(keys::OPTION_ALLOW_AUTO_UPDATE)),
-        )
-    {
         return Ok(UpdateCommandRunOutcome::NoUpdate);
     }
     let command_result = if let Some(command) = command {

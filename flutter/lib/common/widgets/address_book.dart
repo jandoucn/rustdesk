@@ -24,6 +24,7 @@ import 'login.dart';
 final hideAbTagsPanel = false.obs;
 const showAddressBookSelector = false;
 const showAddressBookTagPanel = true;
+const double addressBookTagPanelWidth = 78;
 
 class AddressBook extends StatefulWidget {
   final EdgeInsets? menuPadding;
@@ -84,7 +85,7 @@ class _AddressBookState extends State<AddressBook> {
                   border: Border.all(
                       color: Theme.of(context).colorScheme.background)),
               child: Container(
-                width: 200,
+                width: addressBookTagPanelWidth,
                 height: double.infinity,
                 child: Column(
                   children: [
@@ -800,10 +801,17 @@ class AddressBookTag extends StatelessWidget {
                               : gFFI.abModel.getCurrentAbTagColor(name)),
                     ).marginOnly(right: radius / 2),
                   Expanded(
-                    child: Text(isUnTagged ? translate(name) : name,
+                    child: Tooltip(
+                      message: isUnTagged ? translate(name) : name,
+                      waitDuration: const Duration(milliseconds: 500),
+                      child: Text(
+                        isUnTagged ? translate(name) : name,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
                         style: TextStyle(
-                            overflow: TextOverflow.ellipsis,
-                            color: tags.contains(name) ? Colors.white : null)),
+                            color: tags.contains(name) ? Colors.white : null),
+                      ),
+                    ),
                   ),
                 ],
               ),

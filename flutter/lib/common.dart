@@ -4147,6 +4147,11 @@ bool shouldApplyUpdatePolicy({
 
 bool shouldCheckSoftwareUpdateOnStartup(String option) => option == 'Y';
 
+int scheduledUpdateIntervalHours(dynamic value) {
+  final parsed = value is int ? value : int.tryParse('$value');
+  return (parsed ?? 5).clamp(1, 168).toInt();
+}
+
 bool isMatchingManualUpdateCheck({
   required String pendingRequestId,
   required String requestOrigin,
@@ -4199,6 +4204,17 @@ void checkUpdate() {
       final autoUpdate = evt['allow_auto_update'];
       if (autoUpdate is bool) {
         await mainSetBoolOption(kOptionAllowAutoUpdate, autoUpdate);
+      }
+      final scheduledUpdate = evt['enable_scheduled_update'];
+      if (scheduledUpdate is bool) {
+        await mainSetBoolOption(kOptionEnableScheduledUpdate, scheduledUpdate);
+      }
+      final scheduledUpdateInterval = evt['scheduled_update_interval_hours'];
+      if (scheduledUpdateInterval != null) {
+        await bind.mainSetOption(
+          key: kOptionScheduledUpdateIntervalHours,
+          value: '${scheduledUpdateIntervalHours(scheduledUpdateInterval)}',
+        );
       }
       updateUiState.applyPolicyRevision(evt['policy_revision']);
       updateUiState.policyRevision.refresh();

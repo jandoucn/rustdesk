@@ -16,15 +16,20 @@ class ReleaseMetadataPolicyTest(unittest.TestCase):
         self.assertNotIn("打 tag 时原文放进 Release", agents)
         self.assertIn('tag_base="v${version}-build-${formatted_date}"', caller)
         self.assertIn('release_name="$tag"', caller)
-        self.assertIn("publish-release:", build)
-        self.assertIn("创建空说明 Release", build)
+        self.assertIn("publish_release_assets:", build)
+        self.assertIn("if: inputs.publish_release_assets && inputs.upload-artifact", build)
+        self.assertIn("publish_release_assets: false", caller)
+        self.assertIn("publish-release:", caller)
+        self.assertIn('gh release create "$RELEASE_TAG"', caller)
+        self.assertIn('--notes ""', caller)
         self.assertNotIn("publish-release-notes:", build)
         self.assertNotIn("body_path:", build)
         self.assertNotIn("generate_release_notes:", build)
-        self.assertIn("name: ${{ inputs.release-name != '' && inputs.release-name || env.TAG_NAME }}", build)
-        self.assertIn("cleanup-empty-release:", caller)
-        self.assertIn("asset_count=$(jq '.assets | length' release.json)", caller)
-        self.assertIn('gh release delete "$RELEASE_TAG" --cleanup-tag --yes', caller)
+        self.assertIn("cleanup-incomplete-release:", caller)
+        self.assertIn(
+            'gh release delete "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --cleanup-tag --yes',
+            caller,
+        )
         self.assertIn("`v1.5.0-build-2026.09.30-01`", release_notes)
         self.assertNotIn("`20260929-01`", release_notes)
 

@@ -33,6 +33,16 @@ class DesktopHomePage extends StatefulWidget {
 }
 
 const borderColor = Color(0xFF2F65BA);
+const double standardDesktopSidebarExpandedWidth = 200;
+const double standardDesktopSidebarCollapsedWidth = 28;
+
+bool useCollapsibleDesktopSidebar({
+  required bool incomingOnly,
+  required bool sosMode,
+}) =>
+    !incomingOnly && !sosMode;
+
+bool desktopSidebarCollapsedFromLocalOption(String value) => value == 'Y';
 
 class _DesktopHomePageState extends State<DesktopHomePage>
     with AutomaticKeepAliveClientMixin, WidgetsBindingObserver {
@@ -52,6 +62,7 @@ class _DesktopHomePageState extends State<DesktopHomePage>
 
   final RxBool _editHover = false.obs;
   final RxBool _block = false.obs;
+  final RxBool _leftPaneCollapsed = false.obs;
 
   final GlobalKey _childKey = GlobalKey();
 
@@ -64,16 +75,72 @@ class _DesktopHomePageState extends State<DesktopHomePage>
         child: Row(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-isSosMode
-          ? SizedBox(
-              width: 380,
-              child: buildLeftPane(context),
-            )
-          : buildLeftPane(context),
+        if (useCollapsibleDesktopSidebar(
+            incomingOnly: isIncomingOnly, sosMode: isSosMode))
+          _buildCollapsibleLeftPane(context)
+        else if (isSosMode)
+          SizedBox(
+            width: 380,
+            child: buildLeftPane(context),
+          )
+        else
+          buildLeftPane(context),
         if (!isIncomingOnly && !isSosMode) const VerticalDivider(width: 1),
-        if (!isIncomingOnly && !isSosMode) Expanded(child: buildRightPane(context)),
+        if (!isIncomingOnly && !isSosMode)
+          Expanded(child: buildRightPane(context)),
       ],
     ));
+  }
+
+  Widget _buildCollapsibleLeftPane(BuildContext context) {
+    return Obx(() {
+      final collapsed = _leftPaneCollapsed.value;
+      return AnimatedContainer(
+        duration: const Duration(milliseconds: 160),
+        width: collapsed
+            ? standardDesktopSidebarCollapsedWidth
+            : standardDesktopSidebarExpandedWidth,
+        color: Theme.of(context).colorScheme.background,
+        child: collapsed
+            ? Align(
+                alignment: Alignment.center,
+                child: _buildLeftPaneToggle(collapsed: true),
+              )
+            : Stack(
+                children: [
+                  buildLeftPane(context),
+                  Align(
+                    alignment: Alignment.centerRight,
+                    child: _buildLeftPaneToggle(collapsed: false),
+                  ),
+                ],
+              ),
+      );
+    });
+  }
+
+  Widget _buildLeftPaneToggle({required bool collapsed}) {
+    return Tooltip(
+      message: translate(collapsed ? 'Expand' : 'Collapse'),
+      child: InkWell(
+        onTap: () {
+          final value = !collapsed;
+          _leftPaneCollapsed.value = value;
+          bind.setLocalFlutterOption(
+            k: kOptionDesktopSidebarCollapsed,
+            v: value ? 'Y' : 'N',
+          );
+        },
+        child: SizedBox(
+          width: standardDesktopSidebarCollapsedWidth,
+          height: standardDesktopSidebarCollapsedWidth,
+          child: Icon(
+            collapsed ? Icons.chevron_right : Icons.chevron_left,
+            size: 18,
+          ),
+        ),
+      ),
+    );
   }
 
   Widget _buildBlock({required Widget child}) {
@@ -706,6 +773,9 @@ isSosMode
   @override
   void initState() {
     super.initState();
+    _leftPaneCollapsed.value = desktopSidebarCollapsedFromLocalOption(
+      bind.getLocalFlutterOption(k: kOptionDesktopSidebarCollapsed),
+    );
     _updateTimer = periodic_immediate(const Duration(seconds: 1), () async {
       await gFFI.serverModel.fetchID();
       final error = await bind.mainGetError();

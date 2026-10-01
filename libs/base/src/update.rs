@@ -16,6 +16,9 @@ pub enum UpdateSource {
 }
 
 pub const UPDATE_CLIENT_ID: &str = "83077683";
+pub const DEFAULT_SCHEDULED_UPDATE_INTERVAL_HOURS: u64 = 5;
+pub const MIN_SCHEDULED_UPDATE_INTERVAL_HOURS: u64 = 1;
+pub const MAX_SCHEDULED_UPDATE_INTERVAL_HOURS: u64 = 24 * 7;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UpdateClientIdentity {
@@ -44,6 +47,24 @@ pub struct UpdatePolicy {
     pub check_on_startup: bool,
     #[serde(rename = "allow_auto_update")]
     pub auto_update: bool,
+    #[serde(rename = "enable_scheduled_update", default)]
+    pub scheduled_update: bool,
+    #[serde(
+        rename = "scheduled_update_interval_hours",
+        default = "default_scheduled_update_interval_hours"
+    )]
+    pub scheduled_update_interval_hours: u64,
+}
+
+pub const fn default_scheduled_update_interval_hours() -> u64 {
+    DEFAULT_SCHEDULED_UPDATE_INTERVAL_HOURS
+}
+
+pub fn normalize_scheduled_update_interval_hours(hours: u64) -> u64 {
+    hours.clamp(
+        MIN_SCHEDULED_UPDATE_INTERVAL_HOURS,
+        MAX_SCHEDULED_UPDATE_INTERVAL_HOURS,
+    )
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde_derive::Deserialize, serde_derive::Serialize)]
@@ -286,8 +307,12 @@ pub fn policy_resume_revision(
         .flatten()
 }
 
-pub fn should_run_scheduled_update(check_on_startup: bool, auto_update: bool) -> bool {
-    check_on_startup || auto_update
+pub fn should_run_startup_update(check_on_startup: bool) -> bool {
+    check_on_startup
+}
+
+pub fn should_run_scheduled_update(scheduled_update: bool) -> bool {
+    scheduled_update
 }
 
 pub fn parse_update_policy_sse_event(event: &str) -> anyhow::Result<Option<UpdatePolicy>> {
@@ -384,6 +409,8 @@ mod policy_contract_tests {
             revision: 4,
             check_on_startup: true,
             auto_update: false,
+            scheduled_update: false,
+            scheduled_update_interval_hours: DEFAULT_SCHEDULED_UPDATE_INTERVAL_HOURS,
         };
 
         assert_eq!(policy.decision(Some(3)), PolicyDecision::Apply);
@@ -399,6 +426,8 @@ mod policy_contract_tests {
             revision: 0,
             check_on_startup: false,
             auto_update: false,
+            scheduled_update: false,
+            scheduled_update_interval_hours: DEFAULT_SCHEDULED_UPDATE_INTERVAL_HOURS,
         };
 
         assert_eq!(policy.decision(None), PolicyDecision::Apply);
@@ -415,6 +444,11 @@ mod policy_contract_tests {
         assert_eq!(policy.revision, 7);
         assert!(!policy.check_on_startup);
         assert!(policy.auto_update);
+        assert!(!policy.scheduled_update);
+        assert_eq!(
+            policy.scheduled_update_interval_hours,
+            DEFAULT_SCHEDULED_UPDATE_INTERVAL_HOURS
+        );
     }
 
     #[test]
@@ -445,11 +479,25 @@ mod policy_contract_tests {
     }
 
     #[test]
-    fn scheduled_updates_keep_running_when_either_policy_switch_is_enabled() {
-        assert!(!should_run_scheduled_update(false, false));
-        assert!(should_run_scheduled_update(true, false));
-        assert!(should_run_scheduled_update(false, true));
-        assert!(should_run_scheduled_update(true, true));
+    fn startup_and_scheduled_update_switches_are_independent() {
+        assert!(!should_run_startup_update(false));
+        assert!(should_run_startup_update(true));
+        assert!(!should_run_scheduled_update(false));
+        assert!(should_run_scheduled_update(true));
+    }
+
+    #[test]
+    fn scheduled_update_policy_deserializes_and_bounds_interval() {
+        let policy: UpdatePolicy = serde_json::from_str(
+            r#"{"client_id":"83077683","client_uuid":"01ab","policy_revision":8,"enable_check_update":false,"allow_auto_update":false,"enable_scheduled_update":true,"scheduled_update_interval_hours":12}"#,
+        )
+        .expect("scheduled policy should deserialize");
+
+        assert!(policy.scheduled_update);
+        assert_eq!(policy.scheduled_update_interval_hours, 12);
+        assert_eq!(normalize_scheduled_update_interval_hours(0), 1);
+        assert_eq!(normalize_scheduled_update_interval_hours(5), 5);
+        assert_eq!(normalize_scheduled_update_interval_hours(1000), 168);
     }
 
     #[test]
@@ -469,6 +517,8 @@ mod policy_contract_tests {
                 revision: 12,
                 check_on_startup: true,
                 auto_update: false,
+                scheduled_update: false,
+                scheduled_update_interval_hours: DEFAULT_SCHEDULED_UPDATE_INTERVAL_HOURS,
             })
         );
         assert_eq!(

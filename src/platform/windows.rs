@@ -3462,6 +3462,16 @@ fn get_directory_size_kb(path: &str) -> u64 {
     total_size / 1024
 }
 
+fn update_restore_sessions(mut detected: Vec<u32>, current_session: Option<u32>) -> Vec<u32> {
+    detected.retain(|session| *session != 0);
+    detected.sort_unstable();
+    detected.dedup();
+    if detected.is_empty() {
+        detected.extend(current_session.filter(|session| *session != 0));
+    }
+    detected
+}
+
 pub fn update_me(debug: bool) -> ResultType<()> {
     let app_name = crate::get_app_name();
     let src_exe = std::env::current_exe()?.to_string_lossy().to_string();
@@ -3481,25 +3491,28 @@ pub fn update_me(debug: bool) -> ResultType<()> {
     //   by default since Windows 11 24H2;
     // - a non-elevated process cannot read the command line of an elevated one.
     // The `taskkill` in the commands below matches by image name and is not
-    // affected, but `*_sessions` are then empty, so `_restore_session_guard`
-    // silently restores nothing and the update leaves the user without a tray
-    // icon and main window until the app is launched again. Reading the command
-    // line through `NtQueryInformationProcess` instead would fix the queries for
-    // every caller.
+    // affected, but `*_sessions` can then be empty. Preserve the updater's user
+    // session as a fallback so the restore guard still brings back the tray and
+    // main window after a successful replacement.
+    let current_update_session = get_current_process_session_id();
     let main_window_pids =
         crate::platform::get_pids_of_process_with_args::<_, &str>(&app_exe_name, &[]);
-    let main_window_sessions = main_window_pids
-        .iter()
-        .map(|pid| get_session_id_of_process(pid.as_u32()))
-        .flatten()
-        .collect::<Vec<_>>();
+    let main_window_sessions = update_restore_sessions(
+        main_window_pids
+            .iter()
+            .filter_map(|pid| get_session_id_of_process(pid.as_u32()))
+            .collect(),
+        current_update_session,
+    );
     kill_process_by_pids(&app_exe_name, main_window_pids)?;
     let tray_pids = crate::platform::get_pids_of_process_with_args(&app_exe_name, &["--tray"]);
-    let tray_sessions = tray_pids
-        .iter()
-        .map(|pid| get_session_id_of_process(pid.as_u32()))
-        .flatten()
-        .collect::<Vec<_>>();
+    let tray_sessions = update_restore_sessions(
+        tray_pids
+            .iter()
+            .filter_map(|pid| get_session_id_of_process(pid.as_u32()))
+            .collect(),
+        current_update_session,
+    );
     kill_process_by_pids(&app_exe_name, tray_pids)?;
     let is_service_running = is_self_service_running();
 
@@ -4937,6 +4950,19 @@ mod tests {
         assert!(commands.contains(&format!("exit /b {UPDATE_ROLLBACK_FAILED_EXIT_CODE}")));
         assert_eq!(commands.matches("sc start RustDesk").count(), 3);
         assert!(!commands.contains(" /C "));
+    }
+
+    #[test]
+    fn update_restore_sessions_fall_back_to_current_user_session() {
+        assert_eq!(update_restore_sessions(Vec::new(), Some(7)), vec![7]);
+        assert_eq!(
+            update_restore_sessions(Vec::new(), Some(0)),
+            Vec::<u32>::new()
+        );
+        assert_eq!(
+            update_restore_sessions(vec![9, 7, 9, 0], Some(5)),
+            vec![7, 9]
+        );
     }
 
     #[test]

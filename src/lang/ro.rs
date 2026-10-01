@@ -790,6 +790,12 @@ pub static ref T: std::collections::HashMap<&'static str, &'static str> =
         ("Checking for updates", ""),
         ("Update available", ""),
         ("Up to date", ""),
-        ("A new version is available. Update now?", "")
+        ("A new version is available. Update now?", ""),
+        ("Expand", ""),
+        ("Collapse", ""),
+        ("Software update", ""),
+        ("Check for software updates periodically", ""),
+        ("Update check interval", ""),
+        ("hours", "")
     ].iter().cloned().collect();
 }

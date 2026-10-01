@@ -23,12 +23,20 @@ enum PeerUiType { grid, tile, list }
 
 final peerCardUiType = PeerUiType.tile.obs;
 
-const showPeerPlatformVisual = false;
+const showPeerPlatformVisual = true;
 
 String peerCardPrimaryText(Peer peer) =>
     peer.alias.isEmpty ? formatID(peer.id) : peer.alias;
 
 String peerCardSecondaryText(Peer peer) => peer.alias.isEmpty ? '' : peer.id;
+
+String _defaultPeerCardPrimaryText(Peer peer) =>
+    peer.alias.isEmpty ? formatID(peer.id) : peer.alias;
+
+String _defaultPeerCardSecondaryText(Peer peer, bool hideUsername) =>
+    hideUsername
+        ? peer.hostname
+        : '${peer.username}${peer.username.isNotEmpty && peer.hostname.isNotEmpty ? '@' : ''}${peer.hostname}';
 
 bool? hideUsernameOnCard;
 
@@ -139,7 +147,13 @@ class _PeerCardState extends State<_PeerCard>
   }
 
   makeChild(bool isPortrait, Peer peer) {
-    final secondaryText = peerCardSecondaryText(peer);
+    final isAddressBook = widget.tab == PeerTabIndex.ab;
+    final primaryText = isAddressBook
+        ? peerCardPrimaryText(peer)
+        : _defaultPeerCardPrimaryText(peer);
+    final secondaryText = isAddressBook
+        ? peerCardSecondaryText(peer)
+        : _defaultPeerCardSecondaryText(peer, hideUsernameOnCard == true);
     final greyStyle = TextStyle(
         fontSize: 11,
         color: Theme.of(context).textTheme.titleLarge?.color?.withOpacity(0.6));
@@ -194,7 +208,7 @@ class _PeerCardState extends State<_PeerCard>
                         getOnline(isPortrait ? 4 : 8, peer.online),
                         Expanded(
                             child: Text(
-                          peerCardPrimaryText(peer),
+                          primaryText,
                           overflow: TextOverflow.ellipsis,
                           style: Theme.of(context).textTheme.titleSmall,
                         )),
@@ -291,8 +305,13 @@ class _PeerCardState extends State<_PeerCard>
       BuildContext context, Peer peer, Rx<BoxDecoration?> deco) {
     hideUsernameOnCard ??=
         bind.mainGetBuildinOption(key: kHideUsernameOnCard) == 'Y';
-    final primaryText = peerCardPrimaryText(peer);
-    final secondaryText = peerCardSecondaryText(peer);
+    final isAddressBook = widget.tab == PeerTabIndex.ab;
+    final primaryText = isAddressBook
+        ? peerCardPrimaryText(peer)
+        : _defaultPeerCardPrimaryText(peer);
+    final secondaryText = isAddressBook
+        ? peerCardSecondaryText(peer)
+        : _defaultPeerCardSecondaryText(peer, hideUsernameOnCard == true);
     final child = Card(
       color: Colors.transparent,
       elevation: 0,
