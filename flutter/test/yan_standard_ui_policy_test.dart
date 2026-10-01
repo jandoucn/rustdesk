@@ -62,12 +62,12 @@ void main() {
     expect(shouldCheckSoftwareUpdateOnStartup('Y'), isTrue);
   });
 
-  test('startup update prompt is shown for desktop system checks', () {
+  test('startup update prompt is shown for desktop startup checks', () {
     expect(
       shouldShowStartupUpdatePrompt(
         isDesktopMainWindow: true,
         autoUpdate: false,
-        requestOrigin: 'system',
+        requestOrigin: 'startup',
         updateUrl: 'https://download.example/update.exe',
       ),
       isTrue,
@@ -75,12 +75,12 @@ void main() {
   });
 
   test(
-    'startup update prompt is suppressed for auto-update and non-system checks',
+    'startup update prompt is suppressed for auto-update and non-startup checks',
     () {
       final base = {
         'isDesktopMainWindow': true,
         'autoUpdate': false,
-        'requestOrigin': 'system',
+        'requestOrigin': 'startup',
         'updateUrl': 'https://download.example/update.exe',
       };
       expect(
@@ -96,7 +96,7 @@ void main() {
         shouldShowStartupUpdatePrompt(
           isDesktopMainWindow: base['isDesktopMainWindow'] as bool,
           autoUpdate: base['autoUpdate'] as bool,
-          requestOrigin: 'manual',
+          requestOrigin: 'system',
           updateUrl: base['updateUrl'] as String,
         ),
         isFalse,

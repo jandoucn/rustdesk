@@ -906,14 +906,24 @@ fn start_auto_update_check_(rx_msg: Receiver<UpdateMsg>) {
             .unwrap_or(Duration::from_secs(60 * 60 * 24));
         match rx_msg.recv_timeout(wait) {
             Ok(UpdateMsg::CheckUpdate) => {
-                run_update_check(true, &mut last_check_time, &mut next_scheduled_check);
+                run_update_check(
+                    true,
+                    "manual",
+                    &mut last_check_time,
+                    &mut next_scheduled_check,
+                );
             }
             Ok(UpdateMsg::ConnectivityRestored) => {
                 if last_check_time
                     .map(|value: Instant| value.elapsed() >= MIN_INTERVAL)
                     .unwrap_or(true)
                 {
-                    run_update_check(false, &mut last_check_time, &mut next_scheduled_check);
+                    run_update_check(
+                        false,
+                        "system",
+                        &mut last_check_time,
+                        &mut next_scheduled_check,
+                    );
                 }
             }
             Ok(UpdateMsg::ScheduleChanged) => {
@@ -984,8 +994,20 @@ fn start_auto_update_check_(rx_msg: Receiver<UpdateMsg>) {
                 let scheduled_due = next_scheduled_check
                     .map(|deadline| now >= deadline)
                     .unwrap_or(false);
-                if (startup_due && startup_update_enabled()) || scheduled_due {
-                    run_update_check(false, &mut last_check_time, &mut next_scheduled_check);
+                if startup_due && startup_update_enabled() {
+                    run_update_check(
+                        false,
+                        "startup",
+                        &mut last_check_time,
+                        &mut next_scheduled_check,
+                    );
+                } else if scheduled_due {
+                    run_update_check(
+                        false,
+                        "system",
+                        &mut last_check_time,
+                        &mut next_scheduled_check,
+                    );
                 }
             }
             Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
@@ -1015,10 +1037,11 @@ fn scheduled_update_interval() -> Option<Duration> {
 
 fn run_update_check(
     manually: bool,
+    request_origin: &str,
     last_check_time: &mut Option<Instant>,
     next_scheduled_check: &mut Option<Instant>,
 ) {
-    match check_update_request(manually, None) {
+    match check_update_request(manually, None, request_origin) {
         Ok(UpdateCommandRunOutcome::Deferred) => {
             *next_scheduled_check = Some(Instant::now() + DEFERRED_UPDATE_RETRY_INTERVAL);
             schedule_update_check_retry(manually, DEFERRED_UPDATE_RETRY_INTERVAL);
@@ -1057,17 +1080,18 @@ fn schedule_update_command_retry(command: UpdateCommand) {
 }
 
 fn check_update_for_command(command: &UpdateCommand) -> ResultType<UpdateCommandRunOutcome> {
-    check_update_request(false, Some(command))
+    check_update_request(false, Some(command), "command")
 }
 
 fn check_update_request(
     manually: bool,
     command: Option<&UpdateCommand>,
+    request_origin: &str,
 ) -> ResultType<UpdateCommandRunOutcome> {
     // On macOS, auto-update is handled by check_update_as_root() in the service process.
     // The shared check_update() path is only used for manual update checks from the GUI.
     #[cfg(target_os = "macos")]
-    if !manually && command.is_none() {
+    if !manually && command.is_none() && request_origin != "startup" {
         return Ok(UpdateCommandRunOutcome::NoUpdate);
     }
     let command_result = if let Some(command) = command {
@@ -1076,7 +1100,7 @@ fn check_update_request(
             &command.command_id,
         )?)
     } else {
-        do_check_software_update()?;
+        do_check_software_update_with_context(request_origin, "")?;
         None
     };
 

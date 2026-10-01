@@ -4155,7 +4155,7 @@ bool shouldShowStartupUpdatePrompt({
 }) {
   return isDesktopMainWindow &&
       !autoUpdate &&
-      requestOrigin == 'system' &&
+      requestOrigin == 'startup' &&
       updateUrl.isNotEmpty;
 }
 

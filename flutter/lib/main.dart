@@ -397,6 +397,7 @@ class App extends StatefulWidget {
 class _AppState extends State<App> with WidgetsBindingObserver {
   Worker? _startupUpdateWorker;
   String _startupPromptKey = '';
+  bool _startupPromptShowing = false;
 
   @override
   void initState() {
@@ -404,26 +405,15 @@ class _AppState extends State<App> with WidgetsBindingObserver {
     if (isDesktop &&
         desktopType == DesktopType.main &&
         (isWindows || isMacOS)) {
-      _startupUpdateWorker = ever(updateUiState.checkResultSerial, (_) {
-        final promptKey = [
-          updateUiState.updateUrl.value,
-          updateUiState.targetVersion.value,
-          updateUiState.targetBuildSeq.value,
-        ].join('|');
-        if (_startupPromptKey == promptKey ||
-            !shouldShowStartupUpdatePrompt(
-              isDesktopMainWindow: true,
-              autoUpdate: mainGetBoolOptionSync(kOptionAllowAutoUpdate),
-              requestOrigin: updateUiState.requestOrigin.value,
-              updateUrl: updateUiState.updateUrl.value,
-            )) {
-          return;
-        }
-        _startupPromptKey = promptKey;
+      _startupUpdateWorker = ever(
+        updateUiState.checkResultSerial,
+        (_) => _handleStartupUpdateResult(),
+      );
+      if (updateUiState.checkResultSerial.value > 0) {
         WidgetsBinding.instance.addPostFrameCallback((_) {
-          if (mounted) _showStartupUpdatePrompt(updateUiState.updateUrl.value);
+          _handleStartupUpdateResult();
         });
-      });
+      }
     }
     WidgetsBinding.instance.window.onPlatformBrightnessChanged = () {
       final userPreference = MyTheme.getThemeModePreference();
@@ -457,27 +447,53 @@ class _AppState extends State<App> with WidgetsBindingObserver {
   }
 
   Future<void> _showStartupUpdatePrompt(String url) async {
-    if (!mounted || url.isEmpty) return;
+    if (!mounted || url.isEmpty || _startupPromptShowing) return;
     final dialogContext = globalKey.currentState?.overlay?.context;
     if (dialogContext == null) return;
-    final accepted = await showDialog<bool>(
-      context: dialogContext,
-      builder: (context) => AlertDialog(
-        title: Text(translate('Software update')),
-        content: Text(translate('A new version is available. Update now?')),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context, false),
-            child: Text(translate('Cancel')),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.pop(context, true),
-            child: Text(translate('Update')),
-          ),
-        ],
-      ),
-    );
-    if (accepted == true) handleUpdate(url);
+    _startupPromptShowing = true;
+    try {
+      final accepted = await showDialog<bool>(
+        context: dialogContext,
+        builder: (context) => AlertDialog(
+          title: Text(translate('Software update')),
+          content: Text(translate('A new version is available. Update now?')),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context, false),
+              child: Text(translate('Cancel')),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.pop(context, true),
+              child: Text(translate('Update')),
+            ),
+          ],
+        ),
+      );
+      if (accepted == true) handleUpdate(url);
+    } finally {
+      _startupPromptShowing = false;
+    }
+  }
+
+  void _handleStartupUpdateResult() {
+    final promptKey = [
+      updateUiState.updateUrl.value,
+      updateUiState.targetVersion.value,
+      updateUiState.targetBuildSeq.value,
+    ].join('|');
+    if (_startupPromptKey == promptKey ||
+        !shouldShowStartupUpdatePrompt(
+          isDesktopMainWindow: true,
+          autoUpdate: mainGetBoolOptionSync(kOptionAllowAutoUpdate),
+          requestOrigin: updateUiState.requestOrigin.value,
+          updateUrl: updateUiState.updateUrl.value,
+        )) {
+      return;
+    }
+    _startupPromptKey = promptKey;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) _showStartupUpdatePrompt(updateUiState.updateUrl.value);
+    });
   }
 
   @override
