@@ -68,7 +68,9 @@ def validate_release_identity(metadata, tag):
 
 def resolve_release_assets(directory, version):
     directory = Path(directory)
-    files = sorted(path for path in directory.iterdir() if path.is_file())
+    files = sorted(
+        path for path in directory.iterdir() if path.is_file() and path.name != "SHA256SUMS"
+    )
     resolved = {}
     for edition in ("standard", "sos"):
         for base_key, suffixes in TARGET_SUFFIXES.items():
@@ -80,7 +82,8 @@ def resolve_release_assets(directory, version):
                 raise PublishError(f"Ambiguous release assets for {base_key}-{edition}: {matches}")
             resolved[f"{base_key}-{edition}"] = matches[0]
     if len(files) != 8 or set(files) != set(resolved.values()):
-        raise PublishError(f"Expected exactly 8 release assets, found {[path.name for path in files]}")
+        all_files = sorted(path.name for path in directory.iterdir() if path.is_file())
+        raise PublishError(f"Expected exactly 8 release assets, found {all_files}")
     return resolved
 
 

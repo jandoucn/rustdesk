@@ -157,6 +157,16 @@ class PublishReleaseToOssTest(unittest.TestCase):
             with self.assertRaisesRegex(self.publisher.PublishError, "exactly 8"):
                 self.publisher.resolve_release_assets(directory, "1.5.0")
 
+    def test_sha256_manifest_is_metadata_not_an_install_asset(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            self.make_assets(directory, signed=True)
+            (directory / "SHA256SUMS").write_text("checksum manifest")
+
+            resolved = self.publisher.resolve_release_assets(directory, "1.5.0")
+
+            self.assertEqual(len(resolved), 8)
+
     def test_upload_concurrency_is_capped_at_four_total_transfers(self):
         source = inspect.getsource(self.publisher)
 
