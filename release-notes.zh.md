@@ -48,7 +48,8 @@
 - standard 版隐藏设置里的录屏选项、首页底部的自建服务器提示和通讯录的「我的地址簿」栏目；标签入口移动到搜索、刷新和多选操作区，默认使用一行多项的紧凑视图。
 - 通讯录设备卡片只显示备注名和客户端 ID，不再显示用户名、主机名或大写字母头像。
 - 终端应用默认允许复制到剪贴板。
-- standard 和 SOS 构建成功后会把八个 Release 安装包同步到阿里云 OSS，并只保留最近五个稳定版本。
+- standard 和 SOS 构建成功后会把八个 Release 安装包同步到阿里云 OSS，并只保留最近五个稳定版本。GitHub Actions 上传使用上海 OSS 传输加速 endpoint `oss-accelerate.aliyuncs.com`；客户端仍通过 `https://download.yan.life` 下载，CNAME 保持指向上海普通 OSS endpoint `rustdesk-release.oss-cn-shanghai.aliyuncs.com`。
+- 同一 GitHub runner 的 32 MiB multipart 实测：上海传输加速约 8.40-8.48 MiB/s，香港 OSS 约 8.48 MiB/s，差异约 1%；因此保留上海 Bucket，不迁移香港。
 
 ## 在线版本检测与升级
 
