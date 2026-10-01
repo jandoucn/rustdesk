@@ -2,6 +2,17 @@ name: Benchmark OSS regions
 
 on:
   workflow_dispatch:
+    inputs:
+      keep_objects:
+        description: Keep temporary objects for a follow-up download test
+        required: false
+        default: false
+        type: boolean
+      cleanup_run_id:
+        description: Delete temporary objects from a previous benchmark run
+        required: false
+        default: ''
+        type: string
 
 permissions:
   contents: read
@@ -11,6 +22,8 @@ jobs:
     runs-on: ubuntu-latest
     env:
       RUN_ID: ${{ github.run_id }}
+      KEEP_OBJECTS: ${{ inputs.keep_objects }}
+      CLEANUP_RUN_ID: ${{ inputs.cleanup_run_id }}
       ACCESS_KEY_ID: ${{ secrets.ALIYUN_ACCESS_KEY_ID }}
       ACCESS_KEY_SECRET: ${{ secrets.ALIYUN_ACCESS_KEY_SECRET }}
     steps:
@@ -30,10 +43,17 @@ jobs:
           path.write_bytes(secrets.token_bytes(32 * 1024 * 1024))
           digest = hashlib.sha256(path.read_bytes()).hexdigest()
           run_id = os.environ["RUN_ID"]
+          cleanup_run_id = os.environ.get("CLEANUP_RUN_ID", "")
           cases = (
               ("accelerate", "rustdesk-release", "oss-accelerate.aliyuncs.com"),
               ("hongkong", "rustdesk-client-release", "oss-cn-hongkong.aliyuncs.com"),
           )
+          if cleanup_run_id:
+              for label, bucket_name, endpoint in cases:
+                  bucket = oss2.Bucket(auth, f"https://{endpoint}", bucket_name, connect_timeout=60)
+                  bucket.delete_object(f"rustdesk/_speed-test/{cleanup_run_id}/{label}.bin")
+                  print(f"CLEANUP endpoint={endpoint} bucket={bucket_name} run_id={cleanup_run_id}", flush=True)
+              raise SystemExit(0)
           created = []
           for label, bucket_name, endpoint in cases:
               key = f"rustdesk/_speed-test/{run_id}/{label}.bin"
@@ -49,9 +69,11 @@ jobs:
               )
               elapsed = time.monotonic() - started
               size = bucket.head_object(key).content_length
-              print(f"UPLOAD endpoint={endpoint} bucket={bucket_name} bytes={size} seconds={elapsed:.3f} MiB_per_second={size / elapsed / 1024 / 1024:.2f} sha256={digest}", flush=True)
+              url = f"https://{bucket_name}.{endpoint}/{key}"
+              print(f"UPLOAD endpoint={endpoint} bucket={bucket_name} bytes={size} seconds={elapsed:.3f} MiB_per_second={size / elapsed / 1024 / 1024:.2f} sha256={digest} url={url}", flush=True)
               created.append((bucket, key))
-          for bucket, key in created:
-              bucket.delete_object(key)
+          if os.environ.get("KEEP_OBJECTS", "false").lower() != "true":
+              for bucket, key in created:
+                  bucket.delete_object(key)
           path.unlink()
           PY
