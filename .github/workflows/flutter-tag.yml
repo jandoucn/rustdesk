@@ -107,6 +107,7 @@ jobs:
 
       - name: Generate Flutter bridge
         run: |
+          flutter pub get
           cargo install cargo-expand --version 1.0.95 --locked
           cargo install flutter_rust_bridge_codegen --version 1.80.1 --features uuid --locked
           flutter_rust_bridge_codegen \

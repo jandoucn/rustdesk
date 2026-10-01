@@ -30,6 +30,25 @@ macro_rules! my_println{
 /// If it returns [`Some`], then the process will continue, and flutter gui will be started.
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 pub fn core_main() -> Option<Vec<String>> {
+    #[cfg(target_os = "macos")]
+    if std::env::args().any(|arg| arg == "--check-macos-permissions") {
+        println!(
+            "screen_recording={} accessibility={} input_monitoring={}",
+            crate::platform::macos::is_can_screen_recording(false),
+            crate::platform::macos::is_process_trusted(false),
+            {
+                #[cfg(feature = "flutter")]
+                {
+                    crate::platform::macos::is_can_input_monitoring(false)
+                }
+                #[cfg(not(feature = "flutter"))]
+                {
+                    true
+                }
+            }
+        );
+        return None;
+    }
     if !crate::common::global_init() {
         return None;
     }
