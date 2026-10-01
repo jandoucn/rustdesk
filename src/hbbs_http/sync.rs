@@ -127,7 +127,10 @@ async fn start_hbbs_sync_async() {
                 let sys_username = v["username"].as_str().unwrap_or_default().to_string();
                 // Though the username comparison is only necessary on Windows,
                 // we still keep the comparison on other platforms for consistency.
-                let need_upload = (!info_uploaded.uploaded || info_uploaded.username.as_ref() != Some(&sys_username)) &&
+                let sysinfo_refresh_requested = config::Status::get("sysinfo_hash").is_empty();
+                let need_upload = (!info_uploaded.uploaded
+                    || info_uploaded.username.as_ref() != Some(&sys_username)
+                    || sysinfo_refresh_requested) &&
                     info_uploaded.last_uploaded.map(|x| x.elapsed() >= UPLOAD_SYSINFO_TIMEOUT).unwrap_or(true);
                 if need_upload {
                     v["version"] = json!(crate::VERSION);
