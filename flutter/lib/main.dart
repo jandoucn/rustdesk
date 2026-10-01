@@ -16,6 +16,7 @@ import 'package:flutter_hbb/desktop/screen/desktop_port_forward_screen.dart';
 import 'package:flutter_hbb/desktop/screen/desktop_remote_screen.dart';
 import 'package:flutter_hbb/desktop/screen/desktop_terminal_screen.dart';
 import 'package:flutter_hbb/desktop/widgets/refresh_wrapper.dart';
+import 'package:flutter_hbb/desktop/widgets/update_progress.dart';
 import 'package:flutter_hbb/models/state_model.dart';
 import 'package:flutter_hbb/utils/multi_window_manager.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
@@ -394,9 +395,36 @@ class App extends StatefulWidget {
 }
 
 class _AppState extends State<App> with WidgetsBindingObserver {
+  Worker? _startupUpdateWorker;
+  String _startupPromptKey = '';
+
   @override
   void initState() {
     super.initState();
+    if (isDesktop &&
+        desktopType == DesktopType.main &&
+        (isWindows || isMacOS)) {
+      _startupUpdateWorker = ever(updateUiState.checkResultSerial, (_) {
+        final promptKey = [
+          updateUiState.updateUrl.value,
+          updateUiState.targetVersion.value,
+          updateUiState.targetBuildSeq.value,
+        ].join('|');
+        if (_startupPromptKey == promptKey ||
+            !shouldShowStartupUpdatePrompt(
+              isDesktopMainWindow: true,
+              autoUpdate: mainGetBoolOptionSync(kOptionAllowAutoUpdate),
+              requestOrigin: updateUiState.requestOrigin.value,
+              updateUrl: updateUiState.updateUrl.value,
+            )) {
+          return;
+        }
+        _startupPromptKey = promptKey;
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (mounted) _showStartupUpdatePrompt(updateUiState.updateUrl.value);
+        });
+      });
+    }
     WidgetsBinding.instance.window.onPlatformBrightnessChanged = () {
       final userPreference = MyTheme.getThemeModePreference();
       if (userPreference != ThemeMode.system) return;
@@ -423,8 +451,33 @@ class _AppState extends State<App> with WidgetsBindingObserver {
 
   @override
   void dispose() {
+    _startupUpdateWorker?.dispose();
     WidgetsBinding.instance.removeObserver(this);
     super.dispose();
+  }
+
+  Future<void> _showStartupUpdatePrompt(String url) async {
+    if (!mounted || url.isEmpty) return;
+    final dialogContext = globalKey.currentState?.overlay?.context;
+    if (dialogContext == null) return;
+    final accepted = await showDialog<bool>(
+      context: dialogContext,
+      builder: (context) => AlertDialog(
+        title: Text(translate('Software update')),
+        content: Text(translate('A new version is available. Update now?')),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: Text(translate('Cancel')),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: Text(translate('Update')),
+          ),
+        ],
+      ),
+    );
+    if (accepted == true) handleUpdate(url);
   }
 
   @override

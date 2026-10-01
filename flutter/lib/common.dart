@@ -4147,6 +4147,18 @@ bool shouldApplyUpdatePolicy({
 
 bool shouldCheckSoftwareUpdateOnStartup(String option) => option == 'Y';
 
+bool shouldShowStartupUpdatePrompt({
+  required bool isDesktopMainWindow,
+  required bool autoUpdate,
+  required String requestOrigin,
+  required String updateUrl,
+}) {
+  return isDesktopMainWindow &&
+      !autoUpdate &&
+      requestOrigin == 'system' &&
+      updateUrl.isNotEmpty;
+}
+
 int scheduledUpdateIntervalHours(dynamic value) {
   final parsed = value is int ? value : int.tryParse('$value');
   return (parsed ?? 5).clamp(1, 168).toInt();

@@ -62,6 +62,48 @@ void main() {
     expect(shouldCheckSoftwareUpdateOnStartup('Y'), isTrue);
   });
 
+  test('startup update prompt is shown for desktop system checks', () {
+    expect(
+      shouldShowStartupUpdatePrompt(
+        isDesktopMainWindow: true,
+        autoUpdate: false,
+        requestOrigin: 'system',
+        updateUrl: 'https://download.example/update.exe',
+      ),
+      isTrue,
+    );
+  });
+
+  test(
+    'startup update prompt is suppressed for auto-update and non-system checks',
+    () {
+      final base = {
+        'isDesktopMainWindow': true,
+        'autoUpdate': false,
+        'requestOrigin': 'system',
+        'updateUrl': 'https://download.example/update.exe',
+      };
+      expect(
+        shouldShowStartupUpdatePrompt(
+          isDesktopMainWindow: base['isDesktopMainWindow'] as bool,
+          autoUpdate: true,
+          requestOrigin: base['requestOrigin'] as String,
+          updateUrl: base['updateUrl'] as String,
+        ),
+        isFalse,
+      );
+      expect(
+        shouldShowStartupUpdatePrompt(
+          isDesktopMainWindow: base['isDesktopMainWindow'] as bool,
+          autoUpdate: base['autoUpdate'] as bool,
+          requestOrigin: 'manual',
+          updateUrl: base['updateUrl'] as String,
+        ),
+        isFalse,
+      );
+    },
+  );
+
   test('scheduled update interval defaults to five hours and stays bounded',
       () {
     expect(scheduledUpdateIntervalHours(''), 5);
