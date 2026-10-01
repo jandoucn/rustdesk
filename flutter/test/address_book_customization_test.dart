@@ -1,3 +1,4 @@
+import 'package:flutter/material.dart';
 import 'package:flutter_hbb/common/widgets/address_book.dart';
 import 'package:flutter_hbb/common/widgets/peer_card.dart';
 import 'package:flutter_hbb/common/widgets/peer_tab_page.dart';
@@ -85,5 +86,14 @@ void main() {
     expect(desktopSidebarCollapsedFromLocalOption('Y'), isTrue);
     expect(desktopSidebarCollapsedFromLocalOption(''), isFalse);
     expect(desktopSidebarCollapsedFromLocalOption('N'), isFalse);
+  });
+
+  test('hidden desktop sidebar content uses the scaffold background', () {
+    final theme = ThemeData.light();
+
+    expect(
+      desktopHomeEmptyPaneBackground(theme),
+      theme.scaffoldBackgroundColor,
+    );
   });
 }

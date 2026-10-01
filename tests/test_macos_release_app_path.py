@@ -45,6 +45,19 @@ def macos_rename_script() -> str:
 
 
 class MacosReleaseAppPathTest(unittest.TestCase):
+    def test_root_updater_supports_the_configured_product_name(self) -> None:
+        product_name = macos_product_name()
+        source = (REPO_ROOT / "src/platform/macos.rs").read_text(encoding="utf-8")
+
+        self.assertIn("validate_update_app_name(&app_name)?", source)
+        self.assertIn("matches!(byte, b' ' | b'-' | b'_' | b'.')", source)
+        self.assertIn('pgrep -u "$agent_uid" -x "{app_name}"', source)
+        self.assertIn('ditto "{src_app}" "$staged_bundle"', source)
+        self.assertIn('mv "{app_bundle}" "{app_bundle}.bak"', source)
+        self.assertIn('--write-plists "{app_name}"', source)
+        self.assertIn("write_plists_for_bundle", source)
+        self.assertIn(product_name, (REPO_ROOT / "flutter/macos/Runner/Configs/AppInfo.xcconfig").read_text())
+
     def test_release_scripts_use_configured_product_name(self) -> None:
         product_name = macos_product_name()
         self.assertIn(" ", product_name)

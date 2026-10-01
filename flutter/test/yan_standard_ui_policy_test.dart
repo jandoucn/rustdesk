@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_hbb/common.dart';
+import 'package:flutter_hbb/models/model.dart';
+import 'package:flutter_hbb/models/peer_tab_model.dart';
 import 'package:flutter_hbb/common/widgets/setting_widgets.dart';
 import 'package:flutter_hbb/consts.dart';
 import 'package:flutter_hbb/desktop/pages/connection_page.dart';
@@ -10,6 +12,39 @@ import 'package:flutter_hbb/models/rustdesk_terminal.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
+  test('Android defaults virtual mouse on unless explicitly disabled', () {
+    expect(
+      showVirtualMouseFromStoredOption(value: '', android: true),
+      isTrue,
+    );
+    expect(
+      showVirtualMouseFromStoredOption(value: 'Y', android: true),
+      isTrue,
+    );
+    expect(
+      showVirtualMouseFromStoredOption(value: 'N', android: true),
+      isFalse,
+    );
+    expect(
+      showVirtualMouseFromStoredOption(value: '', android: false),
+      isFalse,
+    );
+  });
+
+  test('Android uses the same restricted peer tabs as desktop', () {
+    expect(
+      usesRestrictedPeerTabs(desktop: false, android: true),
+      isTrue,
+    );
+    expect(
+      restrictedPeerTabVisibility,
+      [true, false, false, true, false],
+    );
+    expect(restrictedPeerTabOrder, [0, 3, 1, 2, 4]);
+    expect(allowsPeerTabVisibilityMenu(android: true), isFalse);
+    expect(allowsPeerTabVisibilityMenu(android: false), isTrue);
+  });
+
   test('standard edition hides recording settings and remote chat', () {
     expect(showRecordingSettingsForEdition(sosMode: false), isFalse);
     expect(showRecordingSettingsForEdition(sosMode: true), isTrue);

@@ -1852,6 +1852,12 @@ class FfiModel with ChangeNotifier {
   }
 }
 
+bool showVirtualMouseFromStoredOption({
+  required String value,
+  required bool android,
+}) =>
+    value == 'Y' || (android && value.isEmpty);
+
 class VirtualMouseMode with ChangeNotifier {
   bool _showVirtualMouse = false;
   double _virtualMouseScale = 1.0;
@@ -1892,8 +1898,10 @@ class VirtualMouseMode with ChangeNotifier {
   }
 
   void loadOptions() {
-    _showVirtualMouse =
-        bind.mainGetLocalOption(key: kOptionShowVirtualMouse) == 'Y';
+    _showVirtualMouse = showVirtualMouseFromStoredOption(
+      value: bind.mainGetLocalOption(key: kOptionShowVirtualMouse),
+      android: isAndroid,
+    );
     _virtualMouseScale = double.tryParse(
             bind.mainGetLocalOption(key: kOptionVirtualMouseScale)) ??
         1.0;

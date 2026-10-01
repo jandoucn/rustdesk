@@ -2286,10 +2286,13 @@ pub fn check_update_as_root() -> ResultType<bool> {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(target_os = "macos")]
+    use super::wait_for_mac_schedule_change;
     use super::{
-        get_download_file_from_url, update_filename_from_url, verify_detached_signature,
-        UpdateDownloadStaging,
+        get_download_file_from_url, scheduled_update_delay, update_filename_from_url,
+        verify_detached_signature, UpdateDownloadStaging,
     };
+    use std::time::Duration;
 
     #[test]
     fn update_download_file_accepts_expected_github_asset_urls() {

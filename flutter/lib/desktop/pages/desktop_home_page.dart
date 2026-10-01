@@ -25,6 +25,9 @@ import 'package:window_manager/window_manager.dart';
 import 'package:window_size/window_size.dart' as window_size;
 import '../widgets/button.dart';
 
+Color desktopHomeEmptyPaneBackground(ThemeData theme) =>
+    theme.scaffoldBackgroundColor;
+
 class DesktopHomePage extends StatefulWidget {
   const DesktopHomePage({Key? key}) : super(key: key);
 
@@ -215,7 +218,11 @@ class _DesktopHomePageState extends State<DesktopHomePage>
                     children: children,
                   ),
                 ),
-                Expanded(child: Container())
+                Expanded(
+                  child: Container(
+                    color: desktopHomeEmptyPaneBackground(Theme.of(context)),
+                  ),
+                )
               ],
             ),
             if (isOutgoingOnly)

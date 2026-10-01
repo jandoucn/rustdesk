@@ -308,6 +308,9 @@ class _PeerTabPageState extends State<PeerTabPage>
   }
 
   Widget visibleContextMenuListener(Widget child) {
+    if (!allowsPeerTabVisibilityMenu(android: isAndroid)) {
+      return child;
+    }
     if (!(isDesktop || isWebDesktop)) {
       return GestureDetector(
         onLongPressDown: (e) {

@@ -18,6 +18,17 @@ enum PeerTabIndex {
   group,
 }
 
+const restrictedPeerTabVisibility = [true, false, false, true, false];
+const restrictedPeerTabOrder = [0, 3, 1, 2, 4];
+
+bool usesRestrictedPeerTabs({
+  required bool desktop,
+  required bool android,
+}) =>
+    desktop || android;
+
+bool allowsPeerTabVisibilityMenu({required bool android}) => !android;
+
 class PeerTabModel with ChangeNotifier {
   WeakReference<FFI> parent;
   int get currentTab => _currentTab;
@@ -45,7 +56,9 @@ class PeerTabModel with ChangeNotifier {
     !(bind.isDisableGroupPanel() || bind.isDisableAccount()),
   ]);
   final List<bool> _isVisible = List.from(
-      isDesktop ? [true, false, false, true, false] : [true, true, true, true, true],
+      usesRestrictedPeerTabs(desktop: isDesktop, android: isAndroid)
+          ? restrictedPeerTabVisibility
+          : [true, true, true, true, true],
       growable: false);
   List<bool> get isVisibleEnabled => () {
         final list = _isVisible.toList();
@@ -116,20 +129,10 @@ class PeerTabModel with ChangeNotifier {
     if (_currentTab < 0 || _currentTab >= maxTabCount) {
       _currentTab = 0;
     }
-    if (isDesktop) {
-      // The standard desktop layout intentionally exposes only these two tabs.
-      _isVisible
-        ..[0] = true
-        ..[1] = false
-        ..[2] = false
-        ..[3] = true
-        ..[4] = false;
-      orders
-        ..[0] = 0
-        ..[1] = 3
-        ..[2] = 1
-        ..[3] = 2
-        ..[4] = 4;
+    if (usesRestrictedPeerTabs(desktop: isDesktop, android: isAndroid)) {
+      // The standard desktop and Android layouts expose only these two tabs.
+      _isVisible.setAll(0, restrictedPeerTabVisibility);
+      orders.setAll(0, restrictedPeerTabOrder);
       if (_currentTab != PeerTabIndex.recent.index &&
           _currentTab != PeerTabIndex.ab.index) {
         _currentTab = PeerTabIndex.recent.index;
