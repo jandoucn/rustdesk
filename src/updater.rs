@@ -178,7 +178,10 @@ fn applied_policy_revision(identity: &base::update::UpdateClientIdentity) -> Opt
 }
 
 fn current_update_client_identity() -> base::update::UpdateClientIdentity {
-    update_client_identity(&crate::encode64(hbb_common::get_uuid()))
+    update_client_identity(
+        &hbb_common::config::Config::get_id(),
+        &crate::encode64(hbb_common::get_uuid()),
+    )
 }
 
 fn apply_update_policy(policy: UpdatePolicy) {
@@ -574,7 +577,7 @@ mod policy_stream_tests {
             .expect("response should write");
             request
         });
-        let identity = update_client_identity("01ab");
+        let identity = update_client_identity("83077683", "01ab");
         let (tx, rx) = mpsc::channel();
 
         read_update_policy_stream_once(
@@ -612,7 +615,7 @@ mod policy_stream_tests {
             .expect("response should write");
             request
         });
-        let identity = update_client_identity("01ab");
+        let identity = update_client_identity("83077683", "01ab");
         let connected = Arc::new(AtomicBool::new(false));
         let connected_for_callback = Arc::clone(&connected);
 
@@ -673,7 +676,7 @@ mod policy_stream_tests {
             }
             requests
         });
-        let identity = update_client_identity("01ab");
+        let identity = update_client_identity("83077683", "01ab");
         let (tx, rx) = mpsc::channel();
         let (command_tx, command_rx) = mpsc::channel();
 
@@ -722,7 +725,7 @@ mod policy_stream_tests {
             )
             .expect("response should write");
         });
-        let identity = update_client_identity("01ab");
+        let identity = update_client_identity("83077683", "01ab");
         let (tx, rx) = mpsc::channel();
 
         read_update_policy_stream_once(
@@ -1114,8 +1117,13 @@ fn check_update_request(
         return Ok(UpdateCommandRunOutcome::NoUpdate);
     }
     let command_result = if let Some(command) = command {
+        let request_origin = if command.action == UpdateCommandAction::Install {
+            "command_install"
+        } else {
+            "command"
+        };
         Some(do_check_software_update_with_context_result(
-            "command",
+            request_origin,
             &command.command_id,
         )?)
     } else {
@@ -1223,6 +1231,7 @@ fn check_update_request(
                 manifest.build_seq,
                 "none",
             );
+            report_command_update_event(command, "failed", "all_sources_failed");
             return Err(err);
         }
     };
@@ -1233,12 +1242,14 @@ fn check_update_request(
         manifest.build_seq,
         source,
     );
+    report_command_update_event(command, "downloaded", "");
     {
         #[cfg(target_os = "windows")]
         log::debug!("New version available: {}", version);
         // Recheck because a session can start while the verified asset is downloading.
         if should_install && has_no_active_conns() {
             report_update_event("installing", version, manifest.build_seq, source);
+            report_command_update_event(command, "installing", "");
             #[cfg(target_os = "windows")]
             update_new_version(
                 update_msi,
@@ -1248,6 +1259,10 @@ fn check_update_request(
                 &file_path,
                 command.map(|value| value.command_id.as_str()),
             )?;
+            #[cfg(target_os = "windows")]
+            if update_msi {
+                report_command_update_event(command, "installed", "");
+            }
             #[cfg(target_os = "linux")]
             if let Err(err) = install_linux_appimage(&file_path) {
                 log::error!("Failed to install AppImage update: {}", err);
@@ -1555,6 +1570,12 @@ pub(crate) fn report_update_event(status: &str, version: &str, build_seq: u64, s
     );
 }
 
+fn report_command_update_event(command: Option<&UpdateCommand>, status: &str, error_code: &str) {
+    if let Some(command) = command {
+        report_update_command_event(command, status, error_code);
+    }
+}
+
 fn report_update_command_event(command: &UpdateCommand, status: &str, error_code: &str) -> bool {
     const EVENTS_URL: &str = "https://rdapi.yan.life/rd/update/v1/events";
     let Ok(client) = create_http_client_with_url_strict(EVENTS_URL) else {
@@ -1707,6 +1728,7 @@ pub(crate) fn report_pending_update_terminal(status: &str, event: &PendingUpdate
             } else {
                 ("failed", status)
             };
+            report_update_command_event(&state.command, status, error_code);
             persist_and_report_update_command_terminal(&state.command, terminal_status, error_code)
         } else {
             log::warn!("Missing pending update command {command_id}");

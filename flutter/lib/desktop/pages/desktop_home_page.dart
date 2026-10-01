@@ -58,7 +58,6 @@ class _DesktopHomePageState extends State<DesktopHomePage>
   var watchIsInputMonitoring = false;
   var watchIsCanRecordAudio = false;
   Timer? _updateTimer;
-  bool isCardClosed = false;
 
   final RxBool _editHover = false.obs;
   final RxBool _block = false.obs;
@@ -168,7 +167,7 @@ class _DesktopHomePageState extends State<DesktopHomePage>
       if (!isOutgoingOnly) buildPasswordBoard(context),
       FutureBuilder<Widget>(
         future: Future.value(
-            Obx(() => buildHelpCards(stateGlobal.updateUrl.value))),
+            Obx(() => buildHelpCards())),
         builder: (_, data) {
           if (data.hasData) {
             if (isIncomingOnly || isSosMode) {
@@ -504,34 +503,7 @@ class _DesktopHomePageState extends State<DesktopHomePage>
     );
   }
 
-  Widget buildHelpCards(String updateUrl) {
-    if (updateUrl.isNotEmpty && !isCardClosed) {
-      final isToUpdate = (isWindows || isMacOS) && bind.mainIsInstalled();
-      final isUpdating = isVerifiedUpdateBusy(stateGlobal.updateStatus.value);
-      final isDownloaded = stateGlobal.updateStatus.value == 'downloaded';
-      String btnText = isUpdating
-          ? 'Updating...'
-          : (isDownloaded ? 'Install' : (isToUpdate ? 'Update' : 'Download'));
-      GestureTapCallback onPressed = () async {
-        final Uri url = Uri.parse('https://rustdesk.com/download');
-        await launchUrl(url);
-      };
-      if (isToUpdate && !isUpdating) {
-        onPressed = () {
-          handleUpdate(updateUrl);
-        };
-      }
-      return buildInstallCard(
-          "Status",
-          "${translate("new-version-of-{${bind.mainGetAppNameSync()}}-tip")} (${bind.mainGetNewVersion()}).",
-          btnText,
-          onPressed,
-          closeButton: true,
-          help: isToUpdate ? 'Changelog' : null,
-          link: isToUpdate
-              ? 'https://github.com/rustdesk/rustdesk/releases/tag/${bind.mainGetNewVersion()}'
-              : null);
-    }
+  Widget buildHelpCards() {
     if (systemError.isNotEmpty) {
       return buildInstallCard("", systemError, "", () {});
     }
@@ -664,14 +636,8 @@ class _DesktopHomePageState extends State<DesktopHomePage>
       if (closeOption != null) {
         await bind.mainSetLocalOption(key: closeOption, value: 'N');
         if (bind.mainGetLocalOption(key: closeOption) == 'N') {
-          setState(() {
-            isCardClosed = true;
-          });
+          setState(() {});
         }
-      } else {
-        setState(() {
-          isCardClosed = true;
-        });
       }
     }
 

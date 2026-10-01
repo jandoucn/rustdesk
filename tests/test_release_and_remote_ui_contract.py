@@ -107,13 +107,13 @@ class ReleaseAndRemoteUiContractTest(unittest.TestCase):
         rust_updater = (ROOT / "src/updater.rs").read_text()
         self.assertIn('"software_update_event"', rust_updater)
         self.assertIn("update_check_should_stop(resp.update_available, &resp.mode, request_origin)", rust_common)
-        self.assertIn('mode == "disabled" && request_origin != "command"', rust_common)
+        self.assertIn('mode == "disabled" && !request_origin.starts_with("command")', rust_common)
         self.assertIn(
-            "update_client_identity(&crate::encode64(hbb_common::get_uuid()))",
+            "update_client_identity(\n        &hbb_common::config::Config::get_id(),",
             rust_common,
         )
         self.assertIn(
-            "update_client_identity(&crate::encode64(hbb_common::get_uuid()))",
+            "update_client_identity(\n        &hbb_common::config::Config::get_id(),",
             rust_updater,
         )
         self.assertNotIn(
@@ -126,6 +126,31 @@ class ReleaseAndRemoteUiContractTest(unittest.TestCase):
         desktop = (ROOT / "flutter/lib/desktop/pages/desktop_home_page.dart").read_text()
         update_card = desktop[desktop.index("Widget buildHelpCards") : desktop.index("if (systemError", desktop.index("Widget buildHelpCards"))]
         self.assertNotIn("mainUriPrefixSync().contains('rustdesk')", update_card)
+
+    def test_home_page_hides_online_update_card(self):
+        desktop = (ROOT / "flutter/lib/desktop/pages/desktop_home_page.dart").read_text()
+        update_card = desktop[
+            desktop.index("Widget buildHelpCards") : desktop.index(
+                "if (systemError", desktop.index("Widget buildHelpCards")
+            )
+        ]
+        self.assertNotIn("if (updateUrl.isNotEmpty", update_card)
+        self.assertNotIn("new-version-of-{", update_card)
+
+    def test_update_commands_report_command_id_for_download_and_install_states(self):
+        updater = (ROOT / "src/updater.rs").read_text()
+        self.assertIn("fn report_command_update_event(", updater)
+        for status in ("downloaded", "installing"):
+            self.assertIn(f'report_command_update_event(command, "{status}", "")', updater)
+        self.assertIn('report_update_command_event(&state.command, status, error_code)', updater)
+
+    def test_installed_updates_relaunch_windows_and_macos_clients(self):
+        windows = (ROOT / "src/updater.rs").read_text()
+        macos = (ROOT / "src/platform/macos.rs").read_text()
+        self.assertIn('launch_privileged_process(', windows)
+        self.assertIn('"{} --update {}"', windows)
+        self.assertIn('launchctl asuser <uid> open -n -a /Applications/RustDesk.app/', macos)
+        self.assertIn('write_result installed', macos)
 
     def test_verified_update_command_is_desktop_only(self):
         source = (ROOT / "src/flutter_ffi.rs").read_text()

@@ -74,6 +74,45 @@ void main() {
     );
   });
 
+  test('remote update prompt requires a visible main window', () {
+    expect(
+      shouldShowDesktopUpdatePrompt(
+        windowVisible: true,
+        autoUpdate: false,
+        requestOrigin: 'command',
+        updateUrl: 'https://download.example/update.exe',
+      ),
+      isTrue,
+    );
+    expect(
+      shouldShowDesktopUpdatePrompt(
+        windowVisible: false,
+        autoUpdate: false,
+        requestOrigin: 'command',
+        updateUrl: 'https://download.example/update.exe',
+      ),
+      isFalse,
+    );
+    expect(
+      shouldShowDesktopUpdatePrompt(
+        windowVisible: true,
+        autoUpdate: false,
+        requestOrigin: 'startup',
+        updateUrl: 'https://download.example/update.exe',
+      ),
+      isTrue,
+    );
+    expect(
+      shouldShowDesktopUpdatePrompt(
+        windowVisible: true,
+        autoUpdate: false,
+        requestOrigin: 'manual',
+        updateUrl: 'https://download.example/update.exe',
+      ),
+      isFalse,
+    );
+  });
+
   test(
     'startup update prompt is suppressed for auto-update and non-startup checks',
     () {

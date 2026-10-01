@@ -4159,6 +4159,18 @@ bool shouldShowStartupUpdatePrompt({
       updateUrl.isNotEmpty;
 }
 
+bool shouldShowDesktopUpdatePrompt({
+  required bool windowVisible,
+  required bool autoUpdate,
+  required String requestOrigin,
+  required String updateUrl,
+}) {
+  return windowVisible &&
+      !autoUpdate &&
+      (requestOrigin == 'command' || requestOrigin == 'startup') &&
+      updateUrl.isNotEmpty;
+}
+
 int scheduledUpdateIntervalHours(dynamic value) {
   final parsed = value is int ? value : int.tryParse('$value');
   return (parsed ?? 5).clamp(1, 168).toInt();

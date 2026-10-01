@@ -1200,7 +1200,7 @@ pub struct SoftwareUpdateCheckResult {
 }
 
 fn update_check_should_stop(update_available: bool, mode: &str, request_origin: &str) -> bool {
-    !update_available || (mode == "disabled" && request_origin != "command")
+    !update_available || (mode == "disabled" && !request_origin.starts_with("command"))
 }
 
 pub fn do_check_software_update_with_context(
@@ -1263,7 +1263,10 @@ async fn do_check_software_update_inner(
         request.target_key = target_key.clone();
         request.package_kind = package_kind;
     }
-    let identity = update_client_identity(&crate::encode64(hbb_common::get_uuid()));
+    let identity = update_client_identity(
+        &hbb_common::config::Config::get_id(),
+        &crate::encode64(hbb_common::get_uuid()),
+    );
     request.client_id = identity.client_id.clone();
     request.client_uuid = identity.client_uuid.clone();
     let body = serde_json::to_vec(&request)?;
@@ -1272,7 +1275,7 @@ async fn do_check_software_update_inner(
         "POST",
         &url,
         &identity,
-        if request_origin == "command" {
+        if request_origin.starts_with("command") {
             request_id
         } else {
             ""
@@ -1299,7 +1302,7 @@ async fn do_check_software_update_inner(
                 .header("X-RustDesk-Device-Nonce", &auth.nonce)
                 .header("X-RustDesk-Device-Signature", &auth.signature);
         }
-        if request_origin == "command" {
+        if request_origin.starts_with("command") {
             builder = builder.header("X-RustDesk-Update-Command-ID", request_id);
         }
         builder

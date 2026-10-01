@@ -15,7 +15,6 @@ pub enum UpdateSource {
     Mirror,
 }
 
-pub const UPDATE_CLIENT_ID: &str = "83077683";
 pub const DEFAULT_SCHEDULED_UPDATE_INTERVAL_HOURS: u64 = 5;
 pub const MIN_SCHEDULED_UPDATE_INTERVAL_HOURS: u64 = 1;
 pub const MAX_SCHEDULED_UPDATE_INTERVAL_HOURS: u64 = 24 * 7;
@@ -26,9 +25,9 @@ pub struct UpdateClientIdentity {
     pub client_uuid: String,
 }
 
-pub fn update_client_identity(client_uuid: &str) -> UpdateClientIdentity {
+pub fn update_client_identity(client_id: &str, client_uuid: &str) -> UpdateClientIdentity {
     UpdateClientIdentity {
-        client_id: UPDATE_CLIENT_ID.to_owned(),
+        client_id: client_id.to_owned(),
         client_uuid: client_uuid.to_owned(),
     }
 }
@@ -384,13 +383,16 @@ mod policy_contract_tests {
     use super::*;
 
     #[test]
-    fn update_identity_uses_real_device_uuid_and_fixed_client_id() {
-        let identity = update_client_identity("NGRiNTA5ZTMtNTkzOC00ZTJiLThhMDYtNGY3Y2VlY2MwZDg0");
+    fn update_identity_uses_explicit_device_id_and_real_device_uuid() {
+        let identity = update_client_identity(
+            "505054514",
+            "YzUyN2U4YjAtY2I4Ny00OTIzLTg4OTAtYjQyYzM0M2YxYzY0",
+        );
 
-        assert_eq!(identity.client_id, "83077683");
+        assert_eq!(identity.client_id, "505054514");
         assert_eq!(
             identity.client_uuid,
-            "NGRiNTA5ZTMtNTkzOC00ZTJiLThhMDYtNGY3Y2VlY2MwZDg0"
+            "YzUyN2U4YjAtY2I4Ny00OTIzLTg4OTAtYjQyYzM0M2YxYzY0"
         );
     }
 
@@ -453,7 +455,7 @@ mod policy_contract_tests {
 
     #[test]
     fn policy_stream_url_contains_identity_and_resume_revision() {
-        let identity = update_client_identity("01ab");
+        let identity = update_client_identity("83077683", "01ab");
 
         assert_eq!(
             update_policy_stream_url("https://rdapi.yan.life", &identity, Some(9)),
@@ -463,7 +465,7 @@ mod policy_contract_tests {
 
     #[test]
     fn fresh_policy_stream_has_no_resume_cursor() {
-        let identity = update_client_identity("01ab");
+        let identity = update_client_identity("83077683", "01ab");
 
         assert_eq!(
             update_policy_stream_url("https://rdapi.yan.life", &identity, None),
@@ -542,7 +544,7 @@ mod policy_contract_tests {
 
     #[test]
     fn policy_is_bound_to_requested_device_identity() {
-        let identity = update_client_identity("01ab");
+        let identity = update_client_identity("83077683", "01ab");
         let event = concat!(
             "event: update-policy\n",
             "id: 12\n",
@@ -629,7 +631,7 @@ mod policy_contract_tests {
 
     #[test]
     fn command_decision_enforces_identity_expiry_and_deduplication() {
-        let identity = update_client_identity("01ab");
+        let identity = update_client_identity("83077683", "01ab");
         let command = UpdateCommand {
             command_id: "cmd-1".to_owned(),
             action: UpdateCommandAction::Install,
@@ -662,7 +664,7 @@ mod policy_contract_tests {
 
     #[test]
     fn accepted_command_continues_after_original_expiry() {
-        let identity = update_client_identity("uuid-1");
+        let identity = update_client_identity("83077683", "uuid-1");
         let command = UpdateCommand {
             command_id: "command-1".to_owned(),
             action: UpdateCommandAction::Install,

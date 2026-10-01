@@ -394,7 +394,7 @@ class App extends StatefulWidget {
   State<App> createState() => _AppState();
 }
 
-class _AppState extends State<App> with WidgetsBindingObserver {
+class _AppState extends State<App> with WidgetsBindingObserver, WindowListener {
   Worker? _startupUpdateWorker;
   String _startupPromptKey = '';
   bool _startupPromptShowing = false;
@@ -402,16 +402,21 @@ class _AppState extends State<App> with WidgetsBindingObserver {
   @override
   void initState() {
     super.initState();
+    if (isDesktop && desktopType == DesktopType.main) {
+      windowManager.addListener(this);
+    }
     if (isDesktop &&
         desktopType == DesktopType.main &&
         (isWindows || isMacOS)) {
       _startupUpdateWorker = ever(
         updateUiState.checkResultSerial,
-        (_) => _handleStartupUpdateResult(),
+        (_) {
+          _consumePendingDesktopUpdatePrompt();
+        },
       );
       if (updateUiState.checkResultSerial.value > 0) {
         WidgetsBinding.instance.addPostFrameCallback((_) {
-          _handleStartupUpdateResult();
+          _consumePendingDesktopUpdatePrompt();
         });
       }
     }
@@ -442,8 +447,25 @@ class _AppState extends State<App> with WidgetsBindingObserver {
   @override
   void dispose() {
     _startupUpdateWorker?.dispose();
+    windowManager.removeListener(this);
     WidgetsBinding.instance.removeObserver(this);
     super.dispose();
+  }
+
+  @override
+  void onWindowFocus() {
+    _consumePendingDesktopUpdatePrompt();
+  }
+
+  @override
+  void onWindowRestore() {
+    _consumePendingDesktopUpdatePrompt();
+  }
+
+  Future<void> _consumePendingDesktopUpdatePrompt() async {
+    if (!isDesktop || desktopType != DesktopType.main) return;
+    if (!await windowManager.isVisible()) return;
+    _handleDesktopUpdateResult();
   }
 
   Future<void> _showStartupUpdatePrompt(String url) async {
@@ -475,22 +497,27 @@ class _AppState extends State<App> with WidgetsBindingObserver {
     }
   }
 
-  void _handleStartupUpdateResult() {
-    final promptKey = [
+  void _handleDesktopUpdateResult() {
+    if (_startupPromptKey == [
+      updateUiState.updateUrl.value,
+      updateUiState.targetVersion.value,
+      updateUiState.targetBuildSeq.value,
+    ].join('|')) {
+      return;
+    }
+    if (!shouldShowDesktopUpdatePrompt(
+      windowVisible: true,
+      autoUpdate: mainGetBoolOptionSync(kOptionAllowAutoUpdate),
+      requestOrigin: updateUiState.requestOrigin.value,
+      updateUrl: updateUiState.updateUrl.value,
+    )) {
+      return;
+    }
+    _startupPromptKey = [
       updateUiState.updateUrl.value,
       updateUiState.targetVersion.value,
       updateUiState.targetBuildSeq.value,
     ].join('|');
-    if (_startupPromptKey == promptKey ||
-        !shouldShowStartupUpdatePrompt(
-          isDesktopMainWindow: true,
-          autoUpdate: mainGetBoolOptionSync(kOptionAllowAutoUpdate),
-          requestOrigin: updateUiState.requestOrigin.value,
-          updateUrl: updateUiState.updateUrl.value,
-        )) {
-      return;
-    }
-    _startupPromptKey = promptKey;
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (mounted) _showStartupUpdatePrompt(updateUiState.updateUrl.value);
     });
