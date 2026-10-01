@@ -58,7 +58,10 @@ enum UpdateMsg {
 
 lazy_static::lazy_static! {
     static ref TX_MSG : Mutex<Sender<UpdateMsg>> = Mutex::new(start_auto_update_check());
-    #[cfg(target_os = "macos")]
+}
+
+#[cfg(target_os = "macos")]
+lazy_static::lazy_static! {
     static ref MAC_SCHEDULER_WAKE: Mutex<Option<Sender<()>>> = Mutex::new(None);
 }
 
