@@ -22,6 +22,8 @@ import 'dialog.dart';
 import 'login.dart';
 
 final hideAbTagsPanel = false.obs;
+const showAddressBookSelector = false;
+const showAddressBookTagPanel = true;
 
 class AddressBook extends StatefulWidget {
   final EdgeInsets? menuPadding;
@@ -86,18 +88,20 @@ class _AddressBookState extends State<AddressBook> {
                 height: double.infinity,
                 child: Column(
                   children: [
-                    _buildAbDropdown(),
-                    _buildTagHeader().marginOnly(
-                        left: 8.0,
-                        right: gFFI.abModel.legacyMode.value ? 8.0 : 0,
-                        top: gFFI.abModel.legacyMode.value ? 8.0 : 0),
-                    Expanded(
-                      child: Container(
-                        width: double.infinity,
-                        height: double.infinity,
-                        child: _buildTags(),
+                    if (showAddressBookSelector) _buildAbDropdown(),
+                    if (showAddressBookTagPanel)
+                      _buildTagHeader().marginOnly(
+                          left: 8.0,
+                          right: gFFI.abModel.legacyMode.value ? 8.0 : 0,
+                          top: gFFI.abModel.legacyMode.value ? 8.0 : 0),
+                    if (showAddressBookTagPanel)
+                      Expanded(
+                        child: Container(
+                          width: double.infinity,
+                          height: double.infinity,
+                          child: _buildTags(),
+                        ),
                       ),
-                    ),
                     _buildAbPermission(),
                   ],
                 ),
@@ -125,12 +129,14 @@ class _AddressBookState extends State<AddressBook> {
                 child: Column(
                   mainAxisSize: MainAxisSize.min,
                   children: [
-                    _buildAbDropdown(),
-                    _buildTagHeader().marginOnly(left: 8.0, right: 0),
-                    Container(
-                      width: double.infinity,
-                      child: _buildTags(),
-                    ),
+                    if (showAddressBookSelector) _buildAbDropdown(),
+                    if (showAddressBookTagPanel)
+                      _buildTagHeader().marginOnly(left: 8.0, right: 0),
+                    if (showAddressBookTagPanel)
+                      Container(
+                        width: double.infinity,
+                        child: _buildTags(),
+                      ),
                   ],
                 ),
               ),

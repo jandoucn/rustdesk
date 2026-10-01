@@ -8,7 +8,11 @@ use std::{
 
 use serde_json::{json, Map, Value};
 
-use base::{config::keys, message_proto::*, update::validate_manifest_contract};
+use base::{
+    config::keys,
+    message_proto::*,
+    update::{update_client_identity, update_option_enabled, validate_manifest_contract},
+};
 #[cfg(not(target_os = "ios"))]
 use hbb_common::whoami;
 use hbb_common::{
@@ -96,6 +100,7 @@ lazy_static::lazy_static! {
     pub static ref SOFTWARE_UPDATE_RESPONSE: Arc<Mutex<Option<hbb_common::VersionCheckResponse>>> = Default::default();
     pub static ref SOFTWARE_UPDATE_TARGET_KEY: Arc<Mutex<String>> = Default::default();
     pub static ref LAST_UPDATE_CHECK: Arc<Mutex<Option<String>>> = Default::default();
+    pub static ref LAST_UPDATE_ERROR: Arc<Mutex<String>> = Default::default();
     pub static ref DEVICE_ID: Arc<Mutex<String>> = Default::default();
     pub static ref DEVICE_NAME: Arc<Mutex<String>> = Default::default();
     static ref PUBLIC_IPV6_ADDR: Arc<Mutex<(Option<SocketAddr>, Option<Instant>)>> = Default::default();
@@ -1016,7 +1021,10 @@ fn add_runtime_inventory_fields(out: &mut serde_json::Value) {
     };
     let executable_name = std::env::current_exe()
         .ok()
-        .and_then(|path| path.file_name().map(|name| name.to_string_lossy().into_owned()))
+        .and_then(|path| {
+            path.file_name()
+                .map(|name| name.to_string_lossy().into_owned())
+        })
         .filter(|name| !name.is_empty())
         .unwrap_or_else(get_app_name);
     out["platform"] = json!(platform);
@@ -1043,13 +1051,21 @@ fn add_runtime_inventory_fields(out: &mut serde_json::Value) {
             } else {
                 "up_to_date"
             };
-            let source = if response.update_available { "primary" } else { "" };
+            let source = if response.update_available {
+                "primary"
+            } else {
+                ""
+            };
             (status.to_owned(), source.to_owned())
         })
         .unwrap_or_else(|| ("not_checked".to_owned(), String::new()));
-    out["last_update_check"] = json!(LAST_UPDATE_CHECK.lock().unwrap().clone().unwrap_or_default());
+    out["last_update_check"] = json!(LAST_UPDATE_CHECK
+        .lock()
+        .unwrap()
+        .clone()
+        .unwrap_or_default());
     out["last_update_status"] = json!(last_update_status);
-    out["last_update_error"] = json!("");
+    out["last_update_error"] = json!(LAST_UPDATE_ERROR.lock().unwrap().clone());
     out["last_update_source"] = json!(last_update_source);
     out["schema_version"] = json!(1);
     out["capabilities"] = json!(["heartbeat", "sysinfo", "software_update"]);
@@ -1071,7 +1087,12 @@ fn add_runtime_inventory_fields(out: &mut serde_json::Value) {
                     .ipv4
                     .into_iter()
                     .map(|network| network.addr.to_string())
-                    .chain(interface.ipv6.into_iter().map(|network| network.addr.to_string()))
+                    .chain(
+                        interface
+                            .ipv6
+                            .into_iter()
+                            .map(|network| network.addr.to_string()),
+                    )
             })
             .filter(|ip| is_private_inventory_ip(ip))
             .take(16)
@@ -1085,11 +1106,7 @@ fn is_private_inventory_ip(value: &str) -> bool {
         return false;
     };
     match ip {
-        std::net::IpAddr::V4(ip) => {
-            !ip.is_loopback()
-                && !ip.is_link_local()
-                && ip.is_private()
-        }
+        std::net::IpAddr::V4(ip) => !ip.is_loopback() && !ip.is_link_local() && ip.is_private(),
         std::net::IpAddr::V6(ip) => {
             let first_segment = ip.segments()[0];
             !ip.is_loopback()
@@ -1141,28 +1158,57 @@ pub fn is_modifier(evt: &KeyEvent) -> bool {
 
 pub fn check_software_update() {
     let opt = LocalConfig::get_option(keys::OPTION_ENABLE_CHECK_UPDATE);
-    if config::option2bool(keys::OPTION_ENABLE_CHECK_UPDATE, &opt) {
+    if update_option_enabled(&opt) {
         std::thread::spawn(move || allow_err!(do_check_software_update()));
     }
 }
 
 // The endpoint is fixed to the Yan update service; TLS policy remains shared
 // with the existing HTTP client and proxy configuration.
+pub fn do_check_software_update() -> hbb_common::ResultType<()> {
+    do_check_software_update_with_context("system", "")
+}
+
+#[derive(Clone)]
+pub struct SoftwareUpdateCheckResult {
+    pub response: Option<hbb_common::VersionCheckResponse>,
+    pub target_key: String,
+}
+
+fn update_check_should_stop(update_available: bool, mode: &str, request_origin: &str) -> bool {
+    !update_available || (mode == "disabled" && request_origin != "command")
+}
+
+pub fn do_check_software_update_with_context(
+    request_origin: &str,
+    request_id: &str,
+) -> hbb_common::ResultType<()> {
+    do_check_software_update_with_context_result(request_origin, request_id).map(|_| ())
+}
+
 #[tokio::main(flavor = "current_thread")]
-pub async fn do_check_software_update() -> hbb_common::ResultType<()> {
+pub async fn do_check_software_update_with_context_result(
+    request_origin: &str,
+    request_id: &str,
+) -> hbb_common::ResultType<SoftwareUpdateCheckResult> {
+    let result = do_check_software_update_inner(request_origin, request_id).await;
+    if let Err(err) = &result {
+        *LAST_UPDATE_ERROR.lock().unwrap() = err.to_string();
+        push_software_update_check_event(None, "", &err.to_string(), request_origin, request_id);
+    }
+    result
+}
+
+async fn do_check_software_update_inner(
+    request_origin: &str,
+    request_id: &str,
+) -> hbb_common::ResultType<SoftwareUpdateCheckResult> {
     *SOFTWARE_UPDATE_URL.lock().unwrap() = String::new();
     *SOFTWARE_UPDATE_RESPONSE.lock().unwrap() = None;
+    LAST_UPDATE_ERROR.lock().unwrap().clear();
+    *LAST_UPDATE_CHECK.lock().unwrap() = Some(chrono::Utc::now().to_rfc3339());
     #[cfg(not(any(target_os = "android", target_os = "ios")))]
     SOFTWARE_UPDATE_TARGET_KEY.lock().unwrap().clear();
-    #[cfg(feature = "flutter")]
-    {
-        let mut event = HashMap::new();
-        event.insert("name", "check_software_update_finish");
-        event.insert("url", "");
-        if let Ok(data) = serde_json::to_string(&event) {
-            let _ = crate::flutter::push_global_event(crate::flutter::APP_TYPE_MAIN, data);
-        }
-    }
     let (mut request, url) =
         hbb_common::version_check_request(hbb_common::VER_TYPE_RUSTDESK_CLIENT.to_string());
     #[cfg(not(any(target_os = "android", target_os = "ios")))]
@@ -1193,15 +1239,48 @@ pub async fn do_check_software_update() -> hbb_common::ResultType<()> {
         request.target_key = target_key.clone();
         request.package_kind = package_kind;
     }
-    request.client_id = crate::get_app_name();
-    request.client_uuid = hex::encode(&request.device_id);
+    let identity = update_client_identity(&crate::encode64(hbb_common::get_uuid()));
+    request.client_id = identity.client_id.clone();
+    request.client_uuid = identity.client_uuid.clone();
+    let body = serde_json::to_vec(&request)?;
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+    let auth = crate::updater::update_device_auth_headers(
+        "POST",
+        &url,
+        &identity,
+        if request_origin == "command" {
+            request_id
+        } else {
+            ""
+        },
+        &body,
+    )?;
     let proxy_conf = Config::get_socks();
     let tls_url = get_url_for_tls(&url, &proxy_conf);
     let tls_type = get_cached_tls_type(tls_url);
     let is_tls_not_cached = tls_type.is_none();
     let tls_type = tls_type.unwrap_or(TlsType::Rustls);
     let client = create_http_client_async(tls_type, false);
-    let latest_release_response = match client.post(&url).json(&request).send().await {
+    let build_request = |client: &reqwest::Client| {
+        let mut builder = client
+            .post(&url)
+            .header("Content-Type", "application/json")
+            .body(body.clone());
+        #[cfg(not(any(target_os = "android", target_os = "ios")))]
+        {
+            builder = builder
+                .header("X-RustDesk-Device-ID", &auth.device_id)
+                .header("X-RustDesk-Device-Public-Key", &auth.public_key)
+                .header("X-RustDesk-Device-Timestamp", &auth.timestamp)
+                .header("X-RustDesk-Device-Nonce", &auth.nonce)
+                .header("X-RustDesk-Device-Signature", &auth.signature);
+        }
+        if request_origin == "command" {
+            builder = builder.header("X-RustDesk-Update-Command-ID", request_id);
+        }
+        builder
+    };
+    let latest_release_response = match build_request(&client).send().await {
         Ok(resp) => {
             upsert_tls_cache(tls_url, tls_type, false);
             resp
@@ -1210,7 +1289,7 @@ pub async fn do_check_software_update() -> hbb_common::ResultType<()> {
             if is_tls_not_cached && err.is_request() {
                 let tls_type = TlsType::NativeTls;
                 let client = create_http_client_async(tls_type, false);
-                let resp = client.post(&url).json(&request).send().await?;
+                let resp = build_request(&client).send().await?;
                 upsert_tls_cache(tls_url, tls_type, false);
                 resp
             } else {
@@ -1220,10 +1299,13 @@ pub async fn do_check_software_update() -> hbb_common::ResultType<()> {
     };
     let bytes = latest_release_response.error_for_status()?.bytes().await?;
     let resp: hbb_common::VersionCheckResponse = serde_json::from_slice(&bytes)?;
-    *LAST_UPDATE_CHECK.lock().unwrap() = Some(chrono::Utc::now().to_rfc3339());
-    if !resp.update_available || resp.mode == "disabled" {
-        *SOFTWARE_UPDATE_RESPONSE.lock().unwrap() = Some(resp);
-        return Ok(());
+    if update_check_should_stop(resp.update_available, &resp.mode, request_origin) {
+        push_software_update_check_event(Some(&resp), "", "", request_origin, request_id);
+        *SOFTWARE_UPDATE_RESPONSE.lock().unwrap() = Some(resp.clone());
+        return Ok(SoftwareUpdateCheckResult {
+            response: Some(resp),
+            target_key: String::new(),
+        });
     }
     #[cfg(not(any(target_os = "android", target_os = "ios")))]
     {
@@ -1265,27 +1347,68 @@ pub async fn do_check_software_update() -> hbb_common::ResultType<()> {
         );
     if is_newer {
         #[cfg(not(any(target_os = "android", target_os = "ios")))]
+        let result_target_key = target_key.clone();
+        #[cfg(any(target_os = "android", target_os = "ios"))]
+        let result_target_key = String::new();
+        #[cfg(not(any(target_os = "android", target_os = "ios")))]
         {
             *SOFTWARE_UPDATE_TARGET_KEY.lock().unwrap() = target_key;
         }
-        #[cfg(feature = "flutter")]
-        {
-            let mut m = HashMap::new();
-            m.insert("name", "check_software_update_finish");
-            m.insert("url", &response_url);
-            if let Ok(data) = serde_json::to_string(&m) {
-                let _ = crate::flutter::push_global_event(crate::flutter::APP_TYPE_MAIN, data);
-            }
-        }
+        push_software_update_check_event(
+            Some(&resp),
+            &response_url,
+            "",
+            request_origin,
+            request_id,
+        );
         *SOFTWARE_UPDATE_URL.lock().unwrap() = response_url;
-        *SOFTWARE_UPDATE_RESPONSE.lock().unwrap() = Some(resp);
+        *SOFTWARE_UPDATE_RESPONSE.lock().unwrap() = Some(resp.clone());
+        return Ok(SoftwareUpdateCheckResult {
+            response: Some(resp),
+            target_key: result_target_key,
+        });
     } else {
         #[cfg(not(any(target_os = "android", target_os = "ios")))]
         SOFTWARE_UPDATE_TARGET_KEY.lock().unwrap().clear();
         *SOFTWARE_UPDATE_URL.lock().unwrap() = "".to_string();
-        *SOFTWARE_UPDATE_RESPONSE.lock().unwrap() = Some(resp);
+        push_software_update_check_event(Some(&resp), "", "", request_origin, request_id);
+        *SOFTWARE_UPDATE_RESPONSE.lock().unwrap() = Some(resp.clone());
     }
-    Ok(())
+    Ok(SoftwareUpdateCheckResult {
+        response: Some(resp),
+        target_key: String::new(),
+    })
+}
+
+fn push_software_update_check_event(
+    response: Option<&hbb_common::VersionCheckResponse>,
+    url: &str,
+    error: &str,
+    request_origin: &str,
+    request_id: &str,
+) {
+    #[cfg(feature = "flutter")]
+    {
+        let event = serde_json::json!({
+            "name": "check_software_update_finish",
+            "url": url,
+            "target_version": response.map(|v| v.target_version.as_str()).unwrap_or_default(),
+            "target_build_seq": response.map(|v| v.target_build_seq).unwrap_or_default(),
+            "current_version": crate::VERSION,
+            "current_build_seq": crate::BUILD_SEQ,
+            "channel": response.map(|v| v.channel.as_str()).unwrap_or(crate::CHANNEL),
+            "mode": response.map(|v| v.mode.as_str()).unwrap_or_default(),
+            "policy_revision": Config::get_option(keys::OPTION_UPDATE_POLICY_REVISION)
+                .parse::<u64>()
+                .unwrap_or_default(),
+            "error": error,
+            "request_origin": request_origin,
+            "request_id": request_id,
+        });
+        let _ = crate::flutter::push_global_event(crate::flutter::APP_TYPE_MAIN, event.to_string());
+    }
+    #[cfg(not(feature = "flutter"))]
+    let _ = (response, url, error, request_origin, request_id);
 }
 
 #[inline]
@@ -3504,7 +3627,9 @@ mod tests {
         assert!(should_throttle_log(
             "https://example.com/api/heartbeat?token=secret"
         ));
-        assert!(should_throttle_log("https://example.com/prefix/api/heartbeat"));
+        assert!(should_throttle_log(
+            "https://example.com/prefix/api/heartbeat"
+        ));
         assert!(!should_throttle_log("https://example.com/api/heartbeat2"));
         assert!(!should_throttle_log("https://example.com/api/sysinfo"));
         assert!(!should_throttle_log(
@@ -4129,6 +4254,13 @@ mod tests {
         assert!(payload["capabilities"].is_array());
         assert!(payload["extensions"].is_object());
         assert_eq!(payload["hostname"], "test");
+    }
+
+    #[test]
+    fn command_checks_keep_signed_manifest_when_policy_mode_is_disabled() {
+        assert!(update_check_should_stop(false, "auto_install", "command"));
+        assert!(update_check_should_stop(true, "disabled", "system"));
+        assert!(!update_check_should_stop(true, "disabled", "command"));
     }
 
     // The route probe is awaited on the connection path, so whatever it finds - an address, or

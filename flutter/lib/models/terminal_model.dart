@@ -34,7 +34,7 @@ TerminalClipboardWritePermission terminalClipboardWritePermission(
   if (!remoteClipboardEnabled) {
     return TerminalClipboardWritePermission.denied;
   }
-  if (localOption == kTerminalClipboardWriteAllowed) {
+  if (localOption.isEmpty || localOption == kTerminalClipboardWriteAllowed) {
     return TerminalClipboardWritePermission.allowed;
   }
   if (localOption == kTerminalClipboardWriteUnconfigured && canRequestConsent) {

@@ -255,10 +255,14 @@ List<(String, String)> otherDefaultSettings() {
 
 String getOtherDefaultSettingOption(String key) {
   if (key == kOptionAllowTerminalClipboardWrite) {
-    return bind.mainGetLocalOption(key: key);
+    return terminalClipboardOptionWithDefault(
+        bind.mainGetLocalOption(key: key));
   }
   return bind.mainGetUserDefaultOption(key: key);
 }
+
+String terminalClipboardOptionWithDefault(String value) =>
+    value.isEmpty ? kTerminalClipboardWriteAllowed : value;
 
 Future<void> setOtherDefaultSettingOption(String key, String value) {
   if (key == kOptionAllowTerminalClipboardWrite) {

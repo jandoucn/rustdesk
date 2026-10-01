@@ -15,6 +15,709 @@ pub enum UpdateSource {
     Mirror,
 }
 
+pub const UPDATE_CLIENT_ID: &str = "83077683";
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UpdateClientIdentity {
+    pub client_id: String,
+    pub client_uuid: String,
+}
+
+pub fn update_client_identity(client_uuid: &str) -> UpdateClientIdentity {
+    UpdateClientIdentity {
+        client_id: UPDATE_CLIENT_ID.to_owned(),
+        client_uuid: client_uuid.to_owned(),
+    }
+}
+
+pub fn update_option_enabled(value: &str) -> bool {
+    value == "Y"
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde_derive::Deserialize)]
+pub struct UpdatePolicy {
+    pub client_id: String,
+    pub client_uuid: String,
+    #[serde(rename = "policy_revision")]
+    pub revision: u64,
+    #[serde(rename = "enable_check_update")]
+    pub check_on_startup: bool,
+    #[serde(rename = "allow_auto_update")]
+    pub auto_update: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde_derive::Deserialize, serde_derive::Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum UpdateCommandAction {
+    Check,
+    Install,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde_derive::Deserialize, serde_derive::Serialize)]
+pub struct UpdateCommand {
+    pub command_id: String,
+    pub action: UpdateCommandAction,
+    pub client_id: String,
+    pub client_uuid: String,
+    pub target_version: Option<String>,
+    pub target_build_seq: Option<u64>,
+    pub expires_at: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum UpdateStreamEvent {
+    Policy(UpdatePolicy),
+    Command(UpdateCommand),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UpdateCommandDecision {
+    Execute,
+    Duplicate,
+    Expired,
+    IdentityMismatch,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UpdateCommandOutcome {
+    NoUpdate,
+    CheckCompleted,
+    AwaitingInstallResult,
+    Installed,
+}
+
+pub fn command_outcome(
+    action: UpdateCommandAction,
+    update_available: bool,
+    asynchronous_install: bool,
+) -> UpdateCommandOutcome {
+    if !update_available {
+        UpdateCommandOutcome::NoUpdate
+    } else if action == UpdateCommandAction::Check {
+        UpdateCommandOutcome::CheckCompleted
+    } else if asynchronous_install {
+        UpdateCommandOutcome::AwaitingInstallResult
+    } else {
+        UpdateCommandOutcome::Installed
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde_derive::Deserialize, serde_derive::Serialize)]
+pub struct UpdateCommandTerminal {
+    pub status: String,
+    pub error_code: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde_derive::Deserialize, serde_derive::Serialize)]
+pub struct UpdateCommandState {
+    pub command: UpdateCommand,
+    pub terminal: Option<UpdateCommandTerminal>,
+    #[serde(default)]
+    pub acked: bool,
+    #[serde(default)]
+    pub deferred_reported: bool,
+}
+
+impl UpdateCommandState {
+    pub fn pending(command: UpdateCommand) -> Self {
+        Self {
+            command,
+            terminal: None,
+            acked: false,
+            deferred_reported: false,
+        }
+    }
+
+    pub fn mark_deferred_reported(&mut self) -> bool {
+        if self.deferred_reported {
+            false
+        } else {
+            self.deferred_reported = true;
+            true
+        }
+    }
+
+    pub fn set_terminal(&mut self, status: &str, error_code: &str) {
+        self.terminal = Some(UpdateCommandTerminal {
+            status: status.to_owned(),
+            error_code: error_code.to_owned(),
+        });
+        self.acked = false;
+    }
+
+    pub fn ack_terminal(&mut self) {
+        self.acked = true;
+    }
+}
+
+#[derive(
+    Debug, Clone, Default, PartialEq, Eq, serde_derive::Deserialize, serde_derive::Serialize,
+)]
+pub struct ProcessedUpdateCommands {
+    pub ids: Vec<String>,
+}
+
+impl ProcessedUpdateCommands {
+    const LIMIT: usize = 128;
+
+    pub fn contains(&self, command_id: &str) -> bool {
+        self.ids.iter().any(|value| value == command_id)
+    }
+
+    pub fn remember(&mut self, command_id: String) {
+        if self.contains(&command_id) {
+            return;
+        }
+        self.ids.push(command_id);
+        if self.ids.len() > Self::LIMIT {
+            self.ids.drain(..self.ids.len() - Self::LIMIT);
+        }
+    }
+}
+
+pub fn update_device_auth_payload(
+    method: &str,
+    path: &str,
+    client_id: &str,
+    client_uuid: &str,
+    timestamp: i64,
+    nonce: &str,
+    command_id: &str,
+    body_sha256: &str,
+) -> Vec<u8> {
+    format!(
+        concat!(
+            "rustdesk-update-auth-v1\n",
+            "method={}\n",
+            "path={}\n",
+            "client_id={}\n",
+            "client_uuid={}\n",
+            "timestamp={}\n",
+            "nonce={}\n",
+            "command_id={}\n",
+            "body_sha256={}\n",
+        ),
+        method, path, client_id, client_uuid, timestamp, nonce, command_id, body_sha256,
+    )
+    .into_bytes()
+}
+
+impl UpdateCommand {
+    pub fn decision(
+        &self,
+        identity: &UpdateClientIdentity,
+        now: i64,
+        already_seen: bool,
+    ) -> UpdateCommandDecision {
+        if !self.matches_identity(identity) {
+            UpdateCommandDecision::IdentityMismatch
+        } else if already_seen {
+            UpdateCommandDecision::Duplicate
+        } else if self.expires_at <= now {
+            UpdateCommandDecision::Expired
+        } else {
+            UpdateCommandDecision::Execute
+        }
+    }
+
+    pub fn accepted_decision(
+        &self,
+        identity: &UpdateClientIdentity,
+        already_processed: bool,
+    ) -> UpdateCommandDecision {
+        if !self.matches_identity(identity) {
+            UpdateCommandDecision::IdentityMismatch
+        } else if already_processed {
+            UpdateCommandDecision::Duplicate
+        } else {
+            UpdateCommandDecision::Execute
+        }
+    }
+
+    pub fn matches_identity(&self, identity: &UpdateClientIdentity) -> bool {
+        self.client_id == identity.client_id && self.client_uuid == identity.client_uuid
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PolicyDecision {
+    Apply,
+    IgnoreStale,
+}
+
+impl UpdatePolicy {
+    pub fn decision(&self, applied_revision: Option<u64>) -> PolicyDecision {
+        if applied_revision.is_none_or(|revision| self.revision > revision) {
+            PolicyDecision::Apply
+        } else {
+            PolicyDecision::IgnoreStale
+        }
+    }
+
+    pub fn matches_identity(&self, identity: &UpdateClientIdentity) -> bool {
+        self.client_id == identity.client_id && self.client_uuid == identity.client_uuid
+    }
+}
+
+pub fn update_policy_stream_url(
+    base_url: &str,
+    identity: &UpdateClientIdentity,
+    after_revision: Option<u64>,
+) -> String {
+    let mut url = format!(
+        "{}/rd/update/v1/policy/stream?client_id={}&client_uuid={}",
+        base_url.trim_end_matches('/'),
+        identity.client_id,
+        identity.client_uuid,
+    );
+    if let Some(revision) = after_revision {
+        url.push_str(&format!("&after_revision={revision}"));
+    }
+    url
+}
+
+pub fn policy_resume_revision(
+    stored_client_uuid: &str,
+    current_client_uuid: &str,
+    stored_revision: Option<u64>,
+) -> Option<u64> {
+    (stored_client_uuid == current_client_uuid)
+        .then_some(stored_revision)
+        .flatten()
+}
+
+pub fn should_run_scheduled_update(check_on_startup: bool, auto_update: bool) -> bool {
+    check_on_startup || auto_update
+}
+
+pub fn parse_update_policy_sse_event(event: &str) -> anyhow::Result<Option<UpdatePolicy>> {
+    match parse_update_stream_sse_event(event)? {
+        Some(UpdateStreamEvent::Policy(policy)) => Ok(Some(policy)),
+        _ => Ok(None),
+    }
+}
+
+pub fn parse_update_stream_sse_event(event: &str) -> anyhow::Result<Option<UpdateStreamEvent>> {
+    let mut event_name = None;
+    let mut event_id = None;
+    let mut data = String::new();
+    for line in event.lines() {
+        if line.starts_with(':') {
+            continue;
+        }
+        if let Some(value) = line.strip_prefix("event:") {
+            event_name = Some(value.trim());
+        } else if let Some(value) = line.strip_prefix("id:") {
+            event_id = Some(value.trim());
+        } else if let Some(value) = line.strip_prefix("data:") {
+            if !data.is_empty() {
+                data.push('\n');
+            }
+            data.push_str(value.trim_start());
+        }
+    }
+    match event_name {
+        Some("update-policy") => {
+            let policy: UpdatePolicy = serde_json::from_str(&data)?;
+            anyhow::ensure!(
+                event_id == Some(policy.revision.to_string().as_str()),
+                "policy SSE id mismatch"
+            );
+            Ok(Some(UpdateStreamEvent::Policy(policy)))
+        }
+        Some("update-command") => {
+            let command: UpdateCommand = serde_json::from_str(&data)?;
+            anyhow::ensure!(
+                event_id == Some(command.command_id.as_str()),
+                "command SSE id mismatch"
+            );
+            anyhow::ensure!(
+                !command.command_id.is_empty()
+                    && command.command_id.len() <= 128
+                    && command.command_id.bytes().all(|byte| {
+                        byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b':')
+                    }),
+                "command id is invalid"
+            );
+            if let Some(version) = &command.target_version {
+                anyhow::ensure!(!version.is_empty(), "command target version is empty");
+            }
+            if command.action == UpdateCommandAction::Install {
+                anyhow::ensure!(
+                    command.target_version.is_some() && command.target_build_seq.is_some(),
+                    "install command target is missing"
+                );
+            }
+            Ok(Some(UpdateStreamEvent::Command(command)))
+        }
+        _ => Ok(None),
+    }
+}
+
+#[cfg(test)]
+mod policy_contract_tests {
+    use super::*;
+
+    #[test]
+    fn update_identity_uses_real_device_uuid_and_fixed_client_id() {
+        let identity = update_client_identity("NGRiNTA5ZTMtNTkzOC00ZTJiLThhMDYtNGY3Y2VlY2MwZDg0");
+
+        assert_eq!(identity.client_id, "83077683");
+        assert_eq!(
+            identity.client_uuid,
+            "NGRiNTA5ZTMtNTkzOC00ZTJiLThhMDYtNGY3Y2VlY2MwZDg0"
+        );
+    }
+
+    #[test]
+    fn unset_update_options_default_to_disabled() {
+        assert!(!update_option_enabled(""));
+        assert!(!update_option_enabled("N"));
+        assert!(update_option_enabled("Y"));
+    }
+
+    #[test]
+    fn policy_revision_only_applies_newer_server_state() {
+        let policy = UpdatePolicy {
+            client_id: "83077683".to_owned(),
+            client_uuid: "01ab".to_owned(),
+            revision: 4,
+            check_on_startup: true,
+            auto_update: false,
+        };
+
+        assert_eq!(policy.decision(Some(3)), PolicyDecision::Apply);
+        assert_eq!(policy.decision(Some(4)), PolicyDecision::IgnoreStale);
+        assert_eq!(policy.decision(Some(5)), PolicyDecision::IgnoreStale);
+    }
+
+    #[test]
+    fn initial_revision_zero_applies_once() {
+        let policy = UpdatePolicy {
+            client_id: "83077683".to_owned(),
+            client_uuid: "01ab".to_owned(),
+            revision: 0,
+            check_on_startup: false,
+            auto_update: false,
+        };
+
+        assert_eq!(policy.decision(None), PolicyDecision::Apply);
+        assert_eq!(policy.decision(Some(0)), PolicyDecision::IgnoreStale);
+    }
+
+    #[test]
+    fn policy_deserializes_server_contract() {
+        let policy: UpdatePolicy = serde_json::from_str(
+            r#"{"client_id":"83077683","client_uuid":"01ab","policy_revision":7,"enable_check_update":false,"allow_auto_update":true}"#,
+        )
+        .expect("policy should deserialize");
+
+        assert_eq!(policy.revision, 7);
+        assert!(!policy.check_on_startup);
+        assert!(policy.auto_update);
+    }
+
+    #[test]
+    fn policy_stream_url_contains_identity_and_resume_revision() {
+        let identity = update_client_identity("01ab");
+
+        assert_eq!(
+            update_policy_stream_url("https://rdapi.yan.life", &identity, Some(9)),
+            "https://rdapi.yan.life/rd/update/v1/policy/stream?client_id=83077683&client_uuid=01ab&after_revision=9"
+        );
+    }
+
+    #[test]
+    fn fresh_policy_stream_has_no_resume_cursor() {
+        let identity = update_client_identity("01ab");
+
+        assert_eq!(
+            update_policy_stream_url("https://rdapi.yan.life", &identity, None),
+            "https://rdapi.yan.life/rd/update/v1/policy/stream?client_id=83077683&client_uuid=01ab"
+        );
+    }
+
+    #[test]
+    fn policy_resume_revision_is_bound_to_client_uuid() {
+        assert_eq!(policy_resume_revision("01ab", "01ab", Some(0)), Some(0));
+        assert_eq!(policy_resume_revision("ffff", "01ab", Some(9)), None);
+        assert_eq!(policy_resume_revision("", "01ab", Some(9)), None);
+    }
+
+    #[test]
+    fn scheduled_updates_keep_running_when_either_policy_switch_is_enabled() {
+        assert!(!should_run_scheduled_update(false, false));
+        assert!(should_run_scheduled_update(true, false));
+        assert!(should_run_scheduled_update(false, true));
+        assert!(should_run_scheduled_update(true, true));
+    }
+
+    #[test]
+    fn parses_policy_sse_and_ignores_heartbeat() {
+        let event = concat!(
+            "event: update-policy\n",
+            "id: 12\n",
+            "data: {\"client_id\":\"83077683\",\"client_uuid\":\"01ab\",",
+            "\"policy_revision\":12,\"enable_check_update\":true,",
+            "\"allow_auto_update\":false}\n\n"
+        );
+        assert_eq!(
+            parse_update_policy_sse_event(event).expect("event should parse"),
+            Some(UpdatePolicy {
+                client_id: "83077683".to_owned(),
+                client_uuid: "01ab".to_owned(),
+                revision: 12,
+                check_on_startup: true,
+                auto_update: false,
+            })
+        );
+        assert_eq!(
+            parse_update_policy_sse_event(": heartbeat\n\n").unwrap(),
+            None
+        );
+    }
+
+    #[test]
+    fn rejects_policy_when_sse_id_does_not_match_revision() {
+        let event = concat!(
+            "event: update-policy\n",
+            "id: 11\n",
+            "data: {\"client_id\":\"83077683\",\"client_uuid\":\"01ab\",",
+            "\"policy_revision\":12,\"enable_check_update\":true,",
+            "\"allow_auto_update\":false}\n\n"
+        );
+
+        assert!(parse_update_policy_sse_event(event).is_err());
+    }
+
+    #[test]
+    fn policy_is_bound_to_requested_device_identity() {
+        let identity = update_client_identity("01ab");
+        let event = concat!(
+            "event: update-policy\n",
+            "id: 12\n",
+            "data: {\"client_id\":\"other\",\"client_uuid\":\"01ab\",",
+            "\"policy_revision\":12,\"enable_check_update\":true,",
+            "\"allow_auto_update\":false}\n\n"
+        );
+        let policy = parse_update_policy_sse_event(event)
+            .expect("event should parse")
+            .expect("event should contain policy");
+
+        assert!(!policy.matches_identity(&identity));
+    }
+
+    #[test]
+    fn parses_check_and_install_command_sse_contract() {
+        let check = concat!(
+            "event: update-command\n",
+            "id: cmd-check-1\n",
+            "data: {\"command_id\":\"cmd-check-1\",\"action\":\"check\",",
+            "\"client_id\":\"83077683\",\"client_uuid\":\"01ab\",",
+            "\"target_version\":\"1.5.0\",\"target_build_seq\":50,",
+            "\"expires_at\":2000}\n\n"
+        );
+        let install = check
+            .replace("cmd-check-1", "cmd-install-1")
+            .replace("\"action\":\"check\"", "\"action\":\"install\"");
+
+        assert_eq!(
+            parse_update_stream_sse_event(check).expect("check command should parse"),
+            Some(UpdateStreamEvent::Command(UpdateCommand {
+                command_id: "cmd-check-1".to_owned(),
+                action: UpdateCommandAction::Check,
+                client_id: "83077683".to_owned(),
+                client_uuid: "01ab".to_owned(),
+                target_version: Some("1.5.0".to_owned()),
+                target_build_seq: Some(50),
+                expires_at: 2000,
+            }))
+        );
+        assert!(matches!(
+            parse_update_stream_sse_event(&install).expect("install command should parse"),
+            Some(UpdateStreamEvent::Command(UpdateCommand {
+                action: UpdateCommandAction::Install,
+                ..
+            }))
+        ));
+    }
+
+    #[test]
+    fn rejects_command_when_sse_id_does_not_match_command_id() {
+        let event = concat!(
+            "event: update-command\n",
+            "id: other\n",
+            "data: {\"command_id\":\"cmd-1\",\"action\":\"check\",",
+            "\"client_id\":\"83077683\",\"client_uuid\":\"01ab\",",
+            "\"target_version\":\"1.5.0\",\"target_build_seq\":50,",
+            "\"expires_at\":2000}\n\n"
+        );
+
+        assert!(parse_update_stream_sse_event(event).is_err());
+    }
+
+    #[test]
+    fn check_command_allows_no_target_but_install_requires_one() {
+        let check = concat!(
+            "event: update-command\n",
+            "id: cmd-check\n",
+            "data: {\"command_id\":\"cmd-check\",\"action\":\"check\",",
+            "\"client_id\":\"83077683\",\"client_uuid\":\"01ab\",",
+            "\"expires_at\":2000}\n\n"
+        );
+        let install = check.replace("\"action\":\"check\"", "\"action\":\"install\"");
+
+        assert!(matches!(
+            parse_update_stream_sse_event(check),
+            Ok(Some(UpdateStreamEvent::Command(UpdateCommand {
+                action: UpdateCommandAction::Check,
+                ..
+            })))
+        ));
+        assert!(parse_update_stream_sse_event(&install).is_err());
+    }
+
+    #[test]
+    fn command_decision_enforces_identity_expiry_and_deduplication() {
+        let identity = update_client_identity("01ab");
+        let command = UpdateCommand {
+            command_id: "cmd-1".to_owned(),
+            action: UpdateCommandAction::Install,
+            client_id: identity.client_id.clone(),
+            client_uuid: identity.client_uuid.clone(),
+            target_version: Some("1.5.0".to_owned()),
+            target_build_seq: Some(50),
+            expires_at: 2000,
+        };
+
+        assert_eq!(
+            command.decision(&identity, 1999, false),
+            UpdateCommandDecision::Execute
+        );
+        assert_eq!(
+            command.decision(&identity, 2000, false),
+            UpdateCommandDecision::Expired
+        );
+        assert_eq!(
+            command.decision(&identity, 1999, true),
+            UpdateCommandDecision::Duplicate
+        );
+        let mut wrong_identity = command.clone();
+        wrong_identity.client_uuid = "ffff".to_owned();
+        assert_eq!(
+            wrong_identity.decision(&identity, 1999, false),
+            UpdateCommandDecision::IdentityMismatch
+        );
+    }
+
+    #[test]
+    fn accepted_command_continues_after_original_expiry() {
+        let identity = update_client_identity("uuid-1");
+        let command = UpdateCommand {
+            command_id: "command-1".to_owned(),
+            action: UpdateCommandAction::Install,
+            client_id: identity.client_id.clone(),
+            client_uuid: identity.client_uuid.clone(),
+            target_version: Some("1.5.0".to_owned()),
+            target_build_seq: Some(50),
+            expires_at: 2000,
+        };
+
+        assert_eq!(
+            command.accepted_decision(&identity, false),
+            UpdateCommandDecision::Execute
+        );
+        assert_eq!(
+            command.accepted_decision(&identity, true),
+            UpdateCommandDecision::Duplicate
+        );
+    }
+
+    #[test]
+    fn command_outcomes_distinguish_no_update_check_and_async_install() {
+        assert_eq!(
+            command_outcome(UpdateCommandAction::Check, false, false),
+            UpdateCommandOutcome::NoUpdate
+        );
+        assert_eq!(
+            command_outcome(UpdateCommandAction::Check, true, false),
+            UpdateCommandOutcome::CheckCompleted
+        );
+        assert_eq!(
+            command_outcome(UpdateCommandAction::Install, true, true),
+            UpdateCommandOutcome::AwaitingInstallResult
+        );
+    }
+
+    #[test]
+    fn terminal_outbox_only_becomes_processed_after_ack() {
+        let command = UpdateCommand {
+            command_id: "cmd-1".to_owned(),
+            action: UpdateCommandAction::Install,
+            client_id: "83077683".to_owned(),
+            client_uuid: "01ab".to_owned(),
+            target_version: Some("1.5.0".to_owned()),
+            target_build_seq: Some(50),
+            expires_at: 2000,
+        };
+        let mut state = UpdateCommandState::pending(command);
+
+        state.set_terminal("installed", "");
+        assert!(state.terminal.is_some());
+        assert!(!state.acked);
+        state.ack_terminal();
+        assert!(state.acked);
+    }
+
+    #[test]
+    fn deferred_command_is_reported_only_once_across_retries() {
+        let mut state = UpdateCommandState::pending(UpdateCommand {
+            command_id: "cmd-1".to_owned(),
+            action: UpdateCommandAction::Install,
+            client_id: "83077683".to_owned(),
+            client_uuid: "01ab".to_owned(),
+            target_version: Some("1.5.0".to_owned()),
+            target_build_seq: Some(50),
+            expires_at: 2000,
+        });
+
+        assert!(state.mark_deferred_reported());
+        assert!(!state.mark_deferred_reported());
+        assert!(state.deferred_reported);
+    }
+
+    #[test]
+    fn processed_command_history_is_bounded_and_deduplicated() {
+        let mut history = ProcessedUpdateCommands::default();
+        for index in 0..140 {
+            history.remember(format!("cmd-{index}"));
+        }
+        history.remember("cmd-139".to_owned());
+
+        assert_eq!(history.ids.len(), 128);
+        assert!(!history.contains("cmd-0"));
+        assert!(history.contains("cmd-139"));
+        assert_eq!(history.ids.iter().filter(|id| *id == "cmd-139").count(), 1);
+    }
+
+    #[test]
+    fn device_auth_canonical_binds_command_and_body() {
+        assert_eq!(
+            update_device_auth_payload(
+                "POST",
+                "/rd/update/v1/check",
+                "83077683",
+                "01ab",
+                123,
+                "nonce",
+                "cmd-1",
+                "aabb"
+            ),
+            b"rustdesk-update-auth-v1\nmethod=POST\npath=/rd/update/v1/check\nclient_id=83077683\nclient_uuid=01ab\ntimestamp=123\nnonce=nonce\ncommand_id=cmd-1\nbody_sha256=aabb\n"
+        );
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PendingUpdateEvent {
     pub transaction_id: String,
@@ -23,6 +726,7 @@ pub struct PendingUpdateEvent {
     pub version: String,
     pub build_seq: u64,
     pub source: UpdateSource,
+    pub command_id: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -63,7 +767,7 @@ impl MacUpdateResult {
             "invalid update result status"
         );
         Ok(format!(
-            "transaction_id={}\nstatus={}\nfrom_version={}\nfrom_build_seq={}\nto_version={}\nto_build_seq={}\nsource={}\n",
+            "transaction_id={}\nstatus={}\nfrom_version={}\nfrom_build_seq={}\nto_version={}\nto_build_seq={}\nsource={}\ncommand_id={}\n",
             self.event.transaction_id,
             self.status,
             self.event.from_version,
@@ -71,6 +775,7 @@ impl MacUpdateResult {
             self.event.version,
             self.event.build_seq,
             self.event.source.as_str(),
+            self.event.command_id.as_deref().unwrap_or_default(),
         ))
     }
 
@@ -79,7 +784,7 @@ impl MacUpdateResult {
             .lines()
             .map(|line| line.split_once('='))
             .collect::<Option<std::collections::HashMap<_, _>>>()?;
-        if fields.len() != 7 {
+        if fields.len() != 7 && fields.len() != 8 {
             return None;
         }
         let transaction_id = *fields.get("transaction_id")?;
@@ -114,6 +819,10 @@ impl MacUpdateResult {
                 version,
                 build_seq: fields.get("to_build_seq")?.parse().ok()?,
                 source,
+                command_id: fields
+                    .get("command_id")
+                    .filter(|value| !value.is_empty())
+                    .map(|value| (*value).to_owned()),
             },
         })
     }
@@ -141,6 +850,7 @@ impl PendingUpdateEvent {
             self.version.clone(),
             self.build_seq.to_string(),
             self.source.as_str().to_owned(),
+            self.command_id.clone().unwrap_or_default(),
         ]
     }
 
@@ -156,6 +866,10 @@ impl PendingUpdateEvent {
             "mirror" => UpdateSource::Mirror,
             _ => return None,
         };
+        let command_id = args
+            .get(index + 7)
+            .filter(|value| !value.is_empty())
+            .cloned();
         if transaction_id.len() != 32
             || !transaction_id.bytes().all(|byte| byte.is_ascii_hexdigit())
             || from_version.is_empty()
@@ -170,6 +884,7 @@ impl PendingUpdateEvent {
             version: version.to_owned(),
             build_seq,
             source,
+            command_id,
         })
     }
 }
@@ -448,6 +1163,7 @@ mod tests {
             version: "1.5.0".to_owned(),
             build_seq: 2026093005,
             source: UpdateSource::Mirror,
+            command_id: Some("cmd-install-1".to_owned()),
         };
         let mut args = vec!["--update".to_owned()];
         args.extend(event.cli_args());
@@ -519,6 +1235,7 @@ mod tests {
                 version: "1.5.0".to_owned(),
                 build_seq: 2026093005,
                 source: UpdateSource::Mirror,
+                command_id: Some("cmd-install-1".to_owned()),
             },
         };
         let encoded = result.encode().expect("result should encode");
@@ -534,6 +1251,7 @@ mod tests {
                 version: "1.5.1".to_owned(),
                 build_seq: 2,
                 source: UpdateSource::Primary,
+                command_id: None,
             },
         };
         assert!(injected.encode().is_err());

@@ -74,8 +74,22 @@ class ReleaseAndRemoteUiContractTest(unittest.TestCase):
         self.assertNotIn("!bind.isCustomClient()", check_update)
 
         rust_common = (ROOT / "src/common.rs").read_text()
-        self.assertIn('"software_update_event"', (ROOT / "src/updater.rs").read_text())
-        self.assertIn("if !resp.update_available || resp.mode == \"disabled\"", rust_common)
+        rust_updater = (ROOT / "src/updater.rs").read_text()
+        self.assertIn('"software_update_event"', rust_updater)
+        self.assertIn("update_check_should_stop(resp.update_available, &resp.mode, request_origin)", rust_common)
+        self.assertIn('mode == "disabled" && request_origin != "command"', rust_common)
+        self.assertIn(
+            "update_client_identity(&crate::encode64(hbb_common::get_uuid()))",
+            rust_common,
+        )
+        self.assertIn(
+            "update_client_identity(&crate::encode64(hbb_common::get_uuid()))",
+            rust_updater,
+        )
+        self.assertNotIn(
+            "update_client_identity(&hbb_common::fingerprint::get_fingerprint",
+            rust_updater,
+        )
         mobile = (ROOT / "flutter/lib/mobile/pages/connection_page.dart").read_text()
         self.assertNotIn("!bind.isCustomClient() && !isIOS", mobile)
         self.assertIn("launchUrl(Uri.parse(updateUrl))", mobile)
@@ -92,6 +106,27 @@ class ReleaseAndRemoteUiContractTest(unittest.TestCase):
             '#[cfg(not(any(target_os = "android", target_os = "ios")))]',
             command,
         )
+
+    def test_update_device_auth_is_desktop_only(self):
+        source = (ROOT / "src/common.rs").read_text()
+        auth = source[source.index("let auth = crate::updater::update_device_auth_headers") - 100 :]
+        auth = auth[: auth.index("let proxy_conf")]
+
+        self.assertIn(
+            '#[cfg(not(any(target_os = "android", target_os = "ios")))]',
+            auth,
+        )
+        self.assertIn(
+            '#[cfg(not(any(target_os = "android", target_os = "ios")))]',
+            source[source.index("let build_request") : source.index("let latest_release_response")],
+        )
+
+    def test_macos_detached_update_preserves_command_id(self):
+        source = (ROOT / "src/platform/macos.rs").read_text()
+        script = source[source.index("write_result() {{") : source.index("bootstrap_agent() {{")]
+
+        self.assertIn("printf 'command_id=%s\\n' '{command_id}'", script)
+        self.assertIn("command_id = event.command_id.as_deref().unwrap_or_default()", source)
 
     def test_removed_remote_actions_do_not_reappear(self):
         desktop = (ROOT / "flutter/lib/desktop/widgets/remote_toolbar.dart").read_text()

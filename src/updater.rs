@@ -1,12 +1,19 @@
-use crate::{common::do_check_software_update, hbbs_http::create_http_client_with_url_strict};
+use crate::{
+    common::{do_check_software_update, do_check_software_update_with_context_result},
+    hbbs_http::create_http_client_with_url_strict,
+};
 #[cfg(target_os = "linux")]
 use base::update::replace_file_transaction;
 use base::{
     config::keys,
     update::{
-        classify_update_preinstall_failure, decide_update_action, try_update_sources,
+        classify_update_preinstall_failure, decide_update_action, parse_update_stream_sse_event,
+        policy_resume_revision, should_run_scheduled_update, try_update_sources,
+        update_client_identity, update_option_enabled, update_policy_stream_url,
         update_signature_payload, update_target_key, validate_manifest_contract,
-        validate_target_metadata, PendingUpdateEvent, UpdateAction, UpdateSource,
+        validate_target_metadata, PendingUpdateEvent, PolicyDecision, ProcessedUpdateCommands,
+        UpdateAction, UpdateCommand, UpdateCommandAction, UpdateCommandDecision,
+        UpdateCommandState, UpdatePolicy, UpdateSource, UpdateStreamEvent,
     },
 };
 use hbb_common::base64::{
@@ -17,10 +24,10 @@ use hbb_common::{bail, config, log, ResultType};
 use sha2::{Digest, Sha256};
 use std::{
     fs::{File, OpenOptions},
-    io::Write,
+    io::{BufRead, BufReader, Write},
     path::{Component, Path, PathBuf},
     sync::{
-        atomic::{AtomicUsize, Ordering},
+        atomic::{AtomicBool, AtomicUsize, Ordering},
         mpsc::{channel, Receiver, Sender},
         Mutex,
     },
@@ -28,13 +35,17 @@ use std::{
 };
 
 #[cfg(unix)]
-use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
+use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
+
+#[cfg(target_os = "linux")]
+use std::os::unix::fs::PermissionsExt;
 
 #[cfg(target_os = "macos")]
 use std::os::unix::fs::MetadataExt;
 
 enum UpdateMsg {
     CheckUpdate,
+    Command(UpdateCommand),
     Exit,
 }
 
@@ -43,6 +54,7 @@ lazy_static::lazy_static! {
 }
 
 static CONTROLLING_SESSION_COUNT: AtomicUsize = AtomicUsize::new(0);
+static POLICY_STREAM_STARTED: AtomicBool = AtomicBool::new(false);
 
 /// Initial wait after startup before the first update check (30 seconds).
 pub const INITIAL_CHECK_DELAY: Duration = Duration::from_secs(30);
@@ -55,6 +67,51 @@ pub const MIN_INTERVAL: Duration = Duration::from_secs(60 * 10);
 
 /// Retry interval when an update check fails or a session is active (30 minutes).
 pub const RETRY_INTERVAL: Duration = Duration::from_secs(60 * 30);
+pub const POLICY_EOF_RECONNECT_DELAY: Duration = Duration::from_secs(1);
+pub const POLICY_ERROR_RECONNECT_DELAY: Duration = Duration::from_secs(2);
+const UPDATE_COMMAND_RETRY_INTERVAL: Duration = Duration::from_secs(30);
+
+pub(crate) struct UpdateDeviceAuthHeaders {
+    pub device_id: String,
+    pub public_key: String,
+    pub timestamp: String,
+    pub nonce: String,
+    pub signature: String,
+}
+
+pub(crate) fn update_device_auth_headers(
+    method: &str,
+    url: &str,
+    identity: &base::update::UpdateClientIdentity,
+    command_id: &str,
+    body: &[u8],
+) -> ResultType<UpdateDeviceAuthHeaders> {
+    let path = url::Url::parse(url)?.path().to_owned();
+    let timestamp = chrono::Utc::now().timestamp().to_string();
+    let nonce = hex::encode(hbb_common::sodiumoxide::randombytes::randombytes(16));
+    let body_sha256 = hex::encode(Sha256::digest(body));
+    let canonical = base::update::update_device_auth_payload(
+        method,
+        &path,
+        &identity.client_id,
+        &identity.client_uuid,
+        timestamp.parse()?,
+        &nonce,
+        command_id,
+        &body_sha256,
+    );
+    let (secret_key, public_key) = config::Config::get_key_pair();
+    let secret_key = hbb_common::sodiumoxide::crypto::sign::SecretKey::from_slice(&secret_key)
+        .ok_or_else(|| hbb_common::anyhow::anyhow!("invalid device signing key"))?;
+    let signature = hbb_common::sodiumoxide::crypto::sign::sign_detached(&canonical, &secret_key);
+    Ok(UpdateDeviceAuthHeaders {
+        device_id: config::Config::get_id(),
+        public_key: STANDARD.encode(public_key),
+        timestamp,
+        nonce,
+        signature: STANDARD.encode(signature.to_bytes()),
+    })
+}
 
 pub fn update_controlling_session_count(count: usize) {
     CONTROLLING_SESSION_COUNT.store(count, Ordering::SeqCst);
@@ -62,7 +119,662 @@ pub fn update_controlling_session_count(count: usize) {
 
 #[allow(dead_code)]
 pub fn start_auto_update() {
+    start_update_policy_stream();
     let _sender = TX_MSG.lock().unwrap();
+}
+
+pub fn start_update_policy_stream() {
+    if POLICY_STREAM_STARTED.swap(true, Ordering::SeqCst) {
+        return;
+    }
+    if let Err(err) = std::thread::Builder::new()
+        .name("rustdesk-update-policy".to_owned())
+        .spawn(update_policy_stream_loop)
+    {
+        POLICY_STREAM_STARTED.store(false, Ordering::SeqCst);
+        log::warn!("Failed to start update policy stream: {err}");
+    }
+}
+
+fn applied_policy_revision(identity: &base::update::UpdateClientIdentity) -> Option<u64> {
+    let stored_uuid = config::Config::get_option(keys::OPTION_UPDATE_POLICY_CLIENT_UUID);
+    let revision = config::Config::get_option(keys::OPTION_UPDATE_POLICY_REVISION)
+        .parse()
+        .ok();
+    let revision = policy_resume_revision(&stored_uuid, &identity.client_uuid, revision);
+    if revision.is_none() && stored_uuid != identity.client_uuid {
+        config::Config::set_option(
+            keys::OPTION_UPDATE_POLICY_REVISION.to_owned(),
+            String::new(),
+        );
+        config::Config::set_option(
+            keys::OPTION_UPDATE_POLICY_CLIENT_UUID.to_owned(),
+            identity.client_uuid.clone(),
+        );
+    }
+    revision
+}
+
+fn current_update_client_identity() -> base::update::UpdateClientIdentity {
+    update_client_identity(&crate::encode64(hbb_common::get_uuid()))
+}
+
+fn apply_update_policy(policy: UpdatePolicy) {
+    let identity = current_update_client_identity();
+    if policy.decision(applied_policy_revision(&identity)) == PolicyDecision::IgnoreStale {
+        return;
+    }
+    let check_value = if policy.check_on_startup { "Y" } else { "N" };
+    let auto_value = if policy.auto_update { "Y" } else { "N" };
+    config::LocalConfig::set_option(
+        keys::OPTION_ENABLE_CHECK_UPDATE.to_owned(),
+        check_value.to_owned(),
+    );
+    config::Config::set_option(
+        keys::OPTION_ALLOW_AUTO_UPDATE.to_owned(),
+        auto_value.to_owned(),
+    );
+    config::Config::set_option(
+        keys::OPTION_UPDATE_POLICY_REVISION.to_owned(),
+        policy.revision.to_string(),
+    );
+    config::Config::set_option(
+        keys::OPTION_UPDATE_POLICY_CLIENT_UUID.to_owned(),
+        policy.client_uuid.clone(),
+    );
+    crate::ui_interface::refresh_options();
+    #[cfg(feature = "flutter")]
+    {
+        let event = serde_json::json!({
+            "name": "update_policy_changed",
+            "enable_check_update": policy.check_on_startup,
+            "allow_auto_update": policy.auto_update,
+            "policy_revision": policy.revision,
+        });
+        let _ = crate::flutter::push_global_event(crate::flutter::APP_TYPE_MAIN, event.to_string());
+    }
+}
+
+fn update_policy_stream_loop() {
+    const POLICY_BASE_URL: &str = "https://rdapi.yan.life";
+    loop {
+        let identity = current_update_client_identity();
+        let revision = applied_policy_revision(&identity);
+        let result = read_update_policy_stream_once(
+            POLICY_BASE_URL,
+            &identity,
+            revision,
+            apply_update_policy,
+            enqueue_update_command,
+        );
+        let reconnect_delay = match result {
+            Ok(()) => POLICY_EOF_RECONNECT_DELAY,
+            Err(err) => {
+                log::trace!("Update policy stream disconnected: {err}");
+                POLICY_ERROR_RECONNECT_DELAY
+            }
+        };
+        std::thread::sleep(reconnect_delay);
+    }
+}
+
+fn read_update_policy_stream_once(
+    base_url: &str,
+    identity: &base::update::UpdateClientIdentity,
+    revision: Option<u64>,
+    mut on_policy: impl FnMut(UpdatePolicy),
+    mut on_command: impl FnMut(UpdateCommand),
+) -> ResultType<()> {
+    let url = update_policy_stream_url(base_url, identity, revision);
+    let client = if url.starts_with("https://") {
+        create_http_client_with_url_strict(&url)?
+    } else {
+        #[cfg(test)]
+        {
+            reqwest::blocking::Client::new()
+        }
+        #[cfg(not(test))]
+        {
+            bail!("update policy stream requires HTTPS")
+        }
+    };
+    let send_stream = |authenticated: bool| -> ResultType<reqwest::blocking::Response> {
+        let mut request = client.get(&url).header("Accept", "text/event-stream");
+        if authenticated {
+            let auth = update_device_auth_headers("GET", &url, identity, "", &[])?;
+            request = request
+                .header("X-RustDesk-Device-ID", auth.device_id)
+                .header("X-RustDesk-Device-Public-Key", auth.public_key)
+                .header("X-RustDesk-Device-Timestamp", auth.timestamp)
+                .header("X-RustDesk-Device-Nonce", auth.nonce)
+                .header("X-RustDesk-Device-Signature", auth.signature);
+        }
+        if let Some(revision) = revision {
+            request = request.header("Last-Event-ID", revision.to_string());
+        }
+        Ok(request.send()?)
+    };
+    let response = send_stream(true)?;
+    let (response, authenticated) = if response.status() == reqwest::StatusCode::UNAUTHORIZED {
+        (send_stream(false)?, false)
+    } else {
+        (response, true)
+    };
+    let response = response.error_for_status()?;
+    let mut reader = BufReader::new(response);
+    let mut event = String::new();
+    loop {
+        let mut line = String::new();
+        if reader.read_line(&mut line)? == 0 {
+            break;
+        }
+        event.push_str(&line);
+        if line == "\n" || line == "\r\n" {
+            match parse_update_stream_sse_event(&event)? {
+                Some(UpdateStreamEvent::Policy(policy)) => {
+                    if policy.matches_identity(identity) {
+                        on_policy(policy);
+                    } else {
+                        log::warn!("Ignored update policy for a different client identity");
+                    }
+                }
+                Some(UpdateStreamEvent::Command(command)) if authenticated => on_command(command),
+                Some(UpdateStreamEvent::Command(_)) => {
+                    log::warn!("Ignored update command from unauthenticated policy stream");
+                }
+                None => {}
+            }
+            event.clear();
+        }
+    }
+    Ok(())
+}
+
+fn update_command_should_defer(action: UpdateCommandAction, has_active_session: bool) -> bool {
+    action == UpdateCommandAction::Install && has_active_session
+}
+
+fn update_command_matches_target(
+    command_version: &str,
+    command_build_seq: u64,
+    manifest_version: &str,
+    manifest_build_seq: u64,
+) -> bool {
+    command_version == manifest_version && command_build_seq == manifest_build_seq
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum UpdateCommandRunOutcome {
+    NoUpdate,
+    CheckCompleted,
+    Deferred,
+    AwaitingInstallResult,
+    Installed,
+}
+
+fn load_pending_update_commands() -> Vec<UpdateCommandState> {
+    let value = config::Config::get_option(keys::OPTION_PENDING_UPDATE_COMMANDS);
+    if value.is_empty() {
+        return Vec::new();
+    }
+    match serde_json::from_str(&value) {
+        Ok(commands) => commands,
+        Err(err) => match serde_json::from_str::<Vec<UpdateCommand>>(&value) {
+            Ok(commands) => commands
+                .into_iter()
+                .map(UpdateCommandState::pending)
+                .collect(),
+            Err(_) => {
+                log::warn!("Failed to load pending update commands: {err}");
+                Vec::new()
+            }
+        },
+    }
+}
+
+fn store_pending_update_commands(commands: &[UpdateCommandState]) -> ResultType<()> {
+    let value = serde_json::to_string(commands)?;
+    config::Config::set_option(keys::OPTION_PENDING_UPDATE_COMMANDS.to_owned(), value);
+    Ok(())
+}
+
+fn load_processed_update_commands() -> ProcessedUpdateCommands {
+    let value = config::Config::get_option(keys::OPTION_PROCESSED_UPDATE_COMMANDS);
+    if value.is_empty() {
+        return ProcessedUpdateCommands::default();
+    }
+    serde_json::from_str(&value).unwrap_or_else(|_| {
+        let mut history = ProcessedUpdateCommands::default();
+        for command_id in value.split(',').filter(|value| !value.is_empty()) {
+            history.remember(command_id.to_owned());
+        }
+        history
+    })
+}
+
+fn store_processed_update_commands(history: &ProcessedUpdateCommands) -> ResultType<()> {
+    config::Config::set_option(
+        keys::OPTION_PROCESSED_UPDATE_COMMANDS.to_owned(),
+        serde_json::to_string(history)?,
+    );
+    Ok(())
+}
+
+fn enqueue_update_command(command: UpdateCommand) {
+    let sender = TX_MSG.lock().unwrap().clone();
+    let identity = current_update_client_identity();
+    let history = load_processed_update_commands();
+    let mut pending = load_pending_update_commands();
+    let already_seen = history.contains(&command.command_id)
+        || pending
+            .iter()
+            .any(|value| value.command.command_id == command.command_id);
+    match command.decision(&identity, chrono::Utc::now().timestamp(), already_seen) {
+        UpdateCommandDecision::Execute => {
+            pending.push(UpdateCommandState::pending(command.clone()));
+            if let Err(err) = store_pending_update_commands(&pending) {
+                log::error!("Failed to persist update command: {err}");
+                report_update_command_event(&command, "failed", "persistence_failed");
+                return;
+            }
+            report_update_command_event(&command, "accepted", "");
+            if let Err(err) = sender.send(UpdateMsg::Command(command)) {
+                log::warn!("Failed to enqueue update command: {err}");
+            }
+        }
+        UpdateCommandDecision::Expired => {
+            report_update_command_event(&command, "expired", "expired");
+        }
+        UpdateCommandDecision::IdentityMismatch => {
+            log::warn!("Ignored update command for a different client identity");
+        }
+        UpdateCommandDecision::Duplicate => {
+            if pending.iter().any(|state| {
+                state.command.command_id == command.command_id && state.terminal.is_some()
+            }) {
+                retry_update_command_terminal(&command.command_id);
+            }
+        }
+    }
+}
+
+fn complete_update_command(command: &UpdateCommand) {
+    let mut history = load_processed_update_commands();
+    history.remember(command.command_id.clone());
+    if let Err(err) = store_processed_update_commands(&history) {
+        log::error!("Failed to persist processed update command: {err}");
+        return;
+    }
+    let mut pending = load_pending_update_commands();
+    pending.retain(|value| value.command.command_id != command.command_id);
+    if let Err(err) = store_pending_update_commands(&pending) {
+        log::error!("Failed to persist completed update command: {err}");
+    }
+}
+
+fn persist_and_report_update_command_terminal(
+    command: &UpdateCommand,
+    status: &str,
+    error_code: &str,
+) -> bool {
+    let mut pending = load_pending_update_commands();
+    let Some(state) = pending
+        .iter_mut()
+        .find(|state| state.command.command_id == command.command_id)
+    else {
+        log::warn!("Missing pending update command {}", command.command_id);
+        return false;
+    };
+    state.set_terminal(status, error_code);
+    if let Err(err) = store_pending_update_commands(&pending) {
+        log::error!("Failed to persist update command terminal state: {err}");
+        return false;
+    }
+    if report_update_command_event(command, status, error_code) {
+        complete_update_command(command);
+        true
+    } else {
+        schedule_update_command_terminal_retry(command.command_id.clone());
+        false
+    }
+}
+
+fn retry_update_command_terminal(command_id: &str) {
+    let Some(state) = load_pending_update_commands()
+        .into_iter()
+        .find(|state| state.command.command_id == command_id)
+    else {
+        return;
+    };
+    if let Some(terminal) = state.terminal {
+        if report_update_command_event(&state.command, &terminal.status, &terminal.error_code) {
+            complete_update_command(&state.command);
+        } else {
+            schedule_update_command_terminal_retry(state.command.command_id);
+        }
+    }
+}
+
+fn report_update_command_deferred_once(command: &UpdateCommand) {
+    let mut pending = load_pending_update_commands();
+    let Some(state) = pending
+        .iter_mut()
+        .find(|state| state.command.command_id == command.command_id)
+    else {
+        return;
+    };
+    if !state.mark_deferred_reported() {
+        return;
+    }
+    if let Err(err) = store_pending_update_commands(&pending) {
+        log::error!("Failed to persist deferred update command state: {err}");
+        return;
+    }
+    report_update_command_event(command, "deferred", "active_session");
+}
+
+fn schedule_update_command_terminal_retry(command_id: String) {
+    std::thread::spawn(move || {
+        std::thread::sleep(UPDATE_COMMAND_RETRY_INTERVAL);
+        retry_update_command_terminal(&command_id);
+    });
+}
+
+#[cfg(test)]
+mod policy_stream_tests {
+    use super::*;
+    use std::{
+        io::{Read, Write},
+        net::TcpListener,
+        sync::mpsc,
+        thread,
+    };
+
+    #[test]
+    fn policy_stream_sends_resume_state_and_delivers_real_sse() {
+        assert!(POLICY_EOF_RECONNECT_DELAY <= Duration::from_secs(1));
+        assert!(POLICY_ERROR_RECONNECT_DELAY <= Duration::from_secs(2));
+        let listener = TcpListener::bind("127.0.0.1:0").expect("fixture should bind");
+        let address = listener.local_addr().expect("fixture should have address");
+        let fixture = thread::spawn(move || {
+            let (mut socket, _) = listener.accept().expect("client should connect");
+            let mut request = [0_u8; 4096];
+            let size = socket.read(&mut request).expect("request should read");
+            let request = String::from_utf8_lossy(&request[..size]).into_owned();
+            let body = concat!(
+                "event: update-policy\n",
+                "id: 4\n",
+                "data: {\"client_id\":\"83077683\",\"client_uuid\":\"01ab\",",
+                "\"policy_revision\":4,\"enable_check_update\":true,",
+                "\"allow_auto_update\":false}\n\n"
+            );
+            write!(
+                socket,
+                "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            )
+            .expect("response should write");
+            request
+        });
+        let identity = update_client_identity("01ab");
+        let (tx, rx) = mpsc::channel();
+
+        read_update_policy_stream_once(
+            &format!("http://{address}"),
+            &identity,
+            Some(3),
+            |policy| tx.send(policy).expect("policy should send"),
+            |_| {},
+        )
+        .expect("stream should complete");
+
+        let request = fixture.join().expect("fixture should finish");
+        assert!(request.contains("GET /rd/update/v1/policy/stream?client_id=83077683&client_uuid=01ab&after_revision=3 HTTP/1.1"));
+        assert!(request.to_ascii_lowercase().contains("last-event-id: 3"));
+        assert_eq!(rx.recv().expect("policy should arrive").revision, 4);
+    }
+
+    #[test]
+    fn fresh_policy_stream_omits_resume_query_and_header() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("fixture should bind");
+        let address = listener.local_addr().expect("fixture should have address");
+        let fixture = thread::spawn(move || {
+            let (mut socket, _) = listener.accept().expect("client should connect");
+            let mut request = [0_u8; 4096];
+            let size = socket.read(&mut request).expect("request should read");
+            let request = String::from_utf8_lossy(&request[..size]).into_owned();
+            let body = ": heartbeat\n\n";
+            write!(
+                socket,
+                "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            )
+            .expect("response should write");
+            request
+        });
+        let identity = update_client_identity("01ab");
+
+        read_update_policy_stream_once(
+            &format!("http://{address}"),
+            &identity,
+            None,
+            |_| {},
+            |_| {},
+        )
+        .expect("stream should complete");
+
+        let request = fixture.join().expect("fixture should finish");
+        assert!(request.contains(
+            "GET /rd/update/v1/policy/stream?client_id=83077683&client_uuid=01ab HTTP/1.1"
+        ));
+        assert!(!request.to_ascii_lowercase().contains("last-event-id:"));
+        assert!(!request.contains("after_revision="));
+    }
+
+    #[test]
+    fn policy_stream_retries_unsigned_when_device_key_is_not_registered() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("fixture should bind");
+        let address = listener.local_addr().expect("fixture should have address");
+        let fixture = thread::spawn(move || {
+            let mut requests = Vec::new();
+            for status in [401, 200] {
+                let (mut socket, _) = listener.accept().expect("client should connect");
+                let mut request = [0_u8; 4096];
+                let size = socket.read(&mut request).expect("request should read");
+                requests.push(String::from_utf8_lossy(&request[..size]).into_owned());
+                let body = if status == 200 {
+                    concat!(
+                        "event: update-policy\n",
+                        "id: 1\n",
+                        "data: {\"client_id\":\"83077683\",\"client_uuid\":\"01ab\",",
+                        "\"policy_revision\":1,\"enable_check_update\":true,",
+                        "\"allow_auto_update\":false}\n\n",
+                        "event: update-command\n",
+                        "id: unsigned-command\n",
+                        "data: {\"command_id\":\"unsigned-command\",\"action\":\"check\",",
+                        "\"client_id\":\"83077683\",\"client_uuid\":\"01ab\",",
+                        "\"expires_at\":4102444800}\n\n"
+                    )
+                } else {
+                    ""
+                };
+                write!(
+                    socket,
+                    "HTTP/1.1 {status} {}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    if status == 200 { "OK" } else { "Unauthorized" },
+                    body.len(),
+                    body
+                )
+                .expect("response should write");
+            }
+            requests
+        });
+        let identity = update_client_identity("01ab");
+        let (tx, rx) = mpsc::channel();
+        let (command_tx, command_rx) = mpsc::channel();
+
+        read_update_policy_stream_once(
+            &format!("http://{address}"),
+            &identity,
+            None,
+            |policy| tx.send(policy).expect("policy should send"),
+            |command| command_tx.send(command).expect("command should send"),
+        )
+        .expect("unsigned fallback should complete");
+
+        let requests = fixture.join().expect("fixture should finish");
+        assert!(requests[0]
+            .to_ascii_lowercase()
+            .contains("x-rustdesk-device-signature:"));
+        assert!(!requests[1]
+            .to_ascii_lowercase()
+            .contains("x-rustdesk-device-signature:"));
+        assert_eq!(rx.recv().expect("policy should arrive").revision, 1);
+        assert!(command_rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn policy_stream_delivers_real_update_command_sse() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("fixture should bind");
+        let address = listener.local_addr().expect("fixture should have address");
+        let fixture = thread::spawn(move || {
+            let (mut socket, _) = listener.accept().expect("client should connect");
+            let mut request = [0_u8; 4096];
+            let _ = socket.read(&mut request).expect("request should read");
+            let body = concat!(
+                "event: update-command\n",
+                "id: cmd-install-1\n",
+                "data: {\"command_id\":\"cmd-install-1\",\"action\":\"install\",",
+                "\"client_id\":\"83077683\",\"client_uuid\":\"01ab\",",
+                "\"target_version\":\"1.5.0\",\"target_build_seq\":50,",
+                "\"expires_at\":4102444800}\n\n"
+            );
+            write!(
+                socket,
+                "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            )
+            .expect("response should write");
+        });
+        let identity = update_client_identity("01ab");
+        let (tx, rx) = mpsc::channel();
+
+        read_update_policy_stream_once(
+            &format!("http://{address}"),
+            &identity,
+            Some(3),
+            |_| {},
+            |command| tx.send(command).expect("command should send"),
+        )
+        .expect("stream should complete");
+
+        fixture.join().expect("fixture should finish");
+        let command = rx.recv().expect("command should arrive");
+        assert_eq!(command.command_id, "cmd-install-1");
+        assert_eq!(command.action, UpdateCommandAction::Install);
+    }
+
+    #[test]
+    fn command_history_persists_all_ids_and_deduplicates_reconnects() {
+        let mut history = ProcessedUpdateCommands::default();
+        for index in 0..40 {
+            history.remember(format!("cmd-{index}"));
+        }
+
+        assert!(history.contains("cmd-0"));
+        assert!(history.contains("cmd-39"));
+        assert_eq!(history.ids.len(), 40);
+        history.remember("cmd-39".to_owned());
+        assert_eq!(history.ids.len(), 40);
+    }
+
+    #[test]
+    fn only_install_commands_defer_for_active_sessions() {
+        assert!(!update_command_should_defer(
+            UpdateCommandAction::Check,
+            true
+        ));
+        assert!(update_command_should_defer(
+            UpdateCommandAction::Install,
+            true
+        ));
+        assert!(!update_command_should_defer(
+            UpdateCommandAction::Install,
+            false
+        ));
+    }
+
+    #[test]
+    fn command_target_requires_exact_manifest_version_and_build() {
+        assert!(update_command_matches_target("1.5.0", 50, "1.5.0", 50));
+        assert!(!update_command_matches_target("1.5.0", 50, "1.5.1", 50));
+        assert!(!update_command_matches_target("1.5.0", 50, "1.5.0", 51));
+    }
+
+    #[test]
+    fn command_outcomes_distinguish_check_install_and_async_completion() {
+        assert_ne!(
+            UpdateCommandRunOutcome::NoUpdate,
+            UpdateCommandRunOutcome::CheckCompleted
+        );
+        assert_ne!(
+            UpdateCommandRunOutcome::Deferred,
+            UpdateCommandRunOutcome::AwaitingInstallResult
+        );
+        assert_ne!(
+            UpdateCommandRunOutcome::AwaitingInstallResult,
+            UpdateCommandRunOutcome::Installed
+        );
+    }
+
+    #[test]
+    fn device_auth_headers_sign_the_exact_request_body() {
+        let identity = base::update::UpdateClientIdentity {
+            client_id: "83077683".to_owned(),
+            client_uuid: "01ab".to_owned(),
+        };
+        let body = br#"{"command_id":"cmd-1"}"#;
+        let headers = update_device_auth_headers(
+            "POST",
+            "https://rdapi.yan.life/rd/update/v1/check?ignored=true",
+            &identity,
+            "cmd-1",
+            body,
+        )
+        .expect("headers should be signed");
+        let canonical = base::update::update_device_auth_payload(
+            "POST",
+            "/rd/update/v1/check",
+            &identity.client_id,
+            &identity.client_uuid,
+            headers.timestamp.parse().expect("timestamp should parse"),
+            &headers.nonce,
+            "cmd-1",
+            &hex::encode(Sha256::digest(body)),
+        );
+        let public_key = hbb_common::sodiumoxide::crypto::sign::PublicKey::from_slice(
+            &STANDARD
+                .decode(headers.public_key)
+                .expect("public key should decode"),
+        )
+        .expect("public key should be valid");
+        let signature = hbb_common::sodiumoxide::crypto::sign::Signature::from_bytes(
+            &STANDARD
+                .decode(headers.signature)
+                .expect("signature should decode"),
+        )
+        .expect("signature should be valid");
+
+        assert!(!headers.device_id.is_empty());
+        assert!(hbb_common::sodiumoxide::crypto::sign::verify_detached(
+            &signature,
+            &canonical,
+            &public_key,
+        ));
+    }
 }
 
 #[allow(dead_code)]
@@ -111,24 +823,29 @@ fn has_no_controlling_conns() -> bool {
 
 fn start_auto_update_check() -> Sender<UpdateMsg> {
     let (tx, rx) = channel();
+    let pending = load_pending_update_commands();
+    let startup_tx = tx.clone();
     std::thread::spawn(move || start_auto_update_check_(rx));
+    for state in pending {
+        if state.terminal.is_some() {
+            retry_update_command_terminal(&state.command.command_id);
+        } else {
+            let _ = startup_tx.send(UpdateMsg::Command(state.command));
+        }
+    }
     return tx;
 }
 
 fn start_auto_update_check_(rx_msg: Receiver<UpdateMsg>) {
-    std::thread::sleep(INITIAL_CHECK_DELAY);
-    if let Err(e) = check_update(false) {
-        log::error!("Error checking for updates: {}", e);
-    }
-
     let mut last_check_time = Instant::now();
-    let mut check_interval = DUR_ONE_DAY;
+    let mut check_interval = INITIAL_CHECK_DELAY;
+    let mut first_scheduled_check = true;
     loop {
         let recv_res = rx_msg.recv_timeout(check_interval);
         match &recv_res {
             Ok(UpdateMsg::CheckUpdate) | Err(_) => {
                 let manually = matches!(recv_res, Ok(UpdateMsg::CheckUpdate));
-                if !manually && last_check_time.elapsed() < MIN_INTERVAL {
+                if !manually && !first_scheduled_check && last_check_time.elapsed() < MIN_INTERVAL {
                     // log::debug!("Update check skipped due to minimum interval.");
                     continue;
                 }
@@ -144,42 +861,141 @@ fn start_auto_update_check_(rx_msg: Receiver<UpdateMsg>) {
                     last_check_time = Instant::now();
                     check_interval = DUR_ONE_DAY;
                 }
+                first_scheduled_check = false;
+            }
+            Ok(UpdateMsg::Command(command)) => {
+                let identity = current_update_client_identity();
+                let history = load_processed_update_commands();
+                match command.accepted_decision(&identity, history.contains(&command.command_id)) {
+                    UpdateCommandDecision::IdentityMismatch => complete_update_command(command),
+                    UpdateCommandDecision::Duplicate => complete_update_command(command),
+                    UpdateCommandDecision::Expired | UpdateCommandDecision::Execute => {
+                        if update_command_should_defer(command.action, !has_no_active_conns()) {
+                            report_update_command_deferred_once(command);
+                            schedule_update_command_retry(command.clone());
+                            continue;
+                        }
+                        report_update_command_event(command, "started", "");
+                        let result = check_update_for_command(command);
+                        match result {
+                            Ok(UpdateCommandRunOutcome::NoUpdate) => {
+                                persist_and_report_update_command_terminal(
+                                    command,
+                                    "no_update",
+                                    "",
+                                );
+                            }
+                            Ok(UpdateCommandRunOutcome::CheckCompleted) => {
+                                persist_and_report_update_command_terminal(
+                                    command,
+                                    "completed",
+                                    "",
+                                );
+                            }
+                            Ok(UpdateCommandRunOutcome::Deferred) => {
+                                report_update_command_deferred_once(command);
+                                schedule_update_command_retry(command.clone());
+                            }
+                            Ok(UpdateCommandRunOutcome::AwaitingInstallResult) => {}
+                            Ok(UpdateCommandRunOutcome::Installed) => {
+                                persist_and_report_update_command_terminal(
+                                    command,
+                                    "completed",
+                                    "",
+                                );
+                            }
+                            Err(err) => {
+                                log::error!("Update command {} failed: {err}", command.command_id);
+                                persist_and_report_update_command_terminal(
+                                    command,
+                                    "failed",
+                                    "command_failed",
+                                );
+                            }
+                        }
+                    }
+                }
             }
             Ok(UpdateMsg::Exit) => break,
         }
     }
 }
 
+fn schedule_update_command_retry(command: UpdateCommand) {
+    std::thread::spawn(move || {
+        std::thread::sleep(UPDATE_COMMAND_RETRY_INTERVAL);
+        let sender = TX_MSG.lock().unwrap();
+        let _ = sender.send(UpdateMsg::Command(command));
+    });
+}
+
 fn check_update(manually: bool) -> ResultType<()> {
+    check_update_request(manually, None).map(|_| ())
+}
+
+fn check_update_for_command(command: &UpdateCommand) -> ResultType<UpdateCommandRunOutcome> {
+    check_update_request(false, Some(command))
+}
+
+fn check_update_request(
+    manually: bool,
+    command: Option<&UpdateCommand>,
+) -> ResultType<UpdateCommandRunOutcome> {
     // On macOS, auto-update is handled by check_update_as_root() in the service process.
     // The shared check_update() path is only used for manual update checks from the GUI.
     #[cfg(target_os = "macos")]
-    if !manually {
-        return Ok(());
+    if !manually && command.is_none() {
+        return Ok(UpdateCommandRunOutcome::NoUpdate);
     }
-    if !(manually || config::Config::get_bool_option(keys::OPTION_ALLOW_AUTO_UPDATE)) {
-        return Ok(());
+    if !manually
+        && command.is_none()
+        && !should_run_scheduled_update(
+            update_option_enabled(&config::LocalConfig::get_option(
+                keys::OPTION_ENABLE_CHECK_UPDATE,
+            )),
+            update_option_enabled(&config::Config::get_option(keys::OPTION_ALLOW_AUTO_UPDATE)),
+        )
+    {
+        return Ok(UpdateCommandRunOutcome::NoUpdate);
     }
-    do_check_software_update()?;
+    let command_result = if let Some(command) = command {
+        Some(do_check_software_update_with_context_result(
+            "command",
+            &command.command_id,
+        )?)
+    } else {
+        do_check_software_update()?;
+        None
+    };
 
-    let response = crate::common::SOFTWARE_UPDATE_RESPONSE
-        .lock()
-        .unwrap()
-        .clone();
+    let response = command_result
+        .as_ref()
+        .and_then(|result| result.response.clone())
+        .or_else(|| {
+            crate::common::SOFTWARE_UPDATE_RESPONSE
+                .lock()
+                .unwrap()
+                .clone()
+        });
     let Some(response) = response else {
         log::debug!("No update available.");
-        return Ok(());
+        return Ok(UpdateCommandRunOutcome::NoUpdate);
     };
-    if !response.update_available || response.mode == "disabled" {
-        return Ok(());
+    if !response.update_available || (response.mode == "disabled" && command.is_none()) {
+        return Ok(UpdateCommandRunOutcome::NoUpdate);
     }
     let Some(ref manifest) = response.manifest else {
-        return Ok(());
+        bail!("update response is missing a signed manifest");
     };
-    let target_key = crate::common::SOFTWARE_UPDATE_TARGET_KEY
-        .lock()
-        .unwrap()
-        .clone();
+    let target_key = command_result
+        .as_ref()
+        .map(|result| result.target_key.clone())
+        .unwrap_or_else(|| {
+            crate::common::SOFTWARE_UPDATE_TARGET_KEY
+                .lock()
+                .unwrap()
+                .clone()
+        });
     if target_key.is_empty() {
         bail!("update target selection is missing");
     }
@@ -195,19 +1011,45 @@ fn check_update(manually: bool) -> ResultType<()> {
         crate::CHANNEL,
         &target_key,
     )?;
+    if let Some(command) = command.filter(|value| value.action == UpdateCommandAction::Install) {
+        let command_version = command.target_version.as_deref().ok_or_else(|| {
+            hbb_common::anyhow::anyhow!("install command target version is missing")
+        })?;
+        let command_build_seq = command.target_build_seq.ok_or_else(|| {
+            hbb_common::anyhow::anyhow!("install command target build is missing")
+        })?;
+        if !update_command_matches_target(
+            command_version,
+            command_build_seq,
+            &manifest.version,
+            manifest.build_seq,
+        ) {
+            bail!("update command target does not match signed manifest");
+        }
+    }
     let target = manifest.targets.get(&target_key).cloned();
     let Some(target) = target else {
-        return Ok(());
+        bail!("signed manifest is missing the selected update target");
     };
     let mut action = decide_update_action(
         &response,
-        config::Config::get_bool_option(keys::OPTION_ALLOW_AUTO_UPDATE),
+        update_option_enabled(&config::Config::get_option(keys::OPTION_ALLOW_AUTO_UPDATE)),
     );
     if manually && response.update_available && response.mode != "disabled" {
         action = UpdateAction::AutoInstall;
     }
+    if let Some(command) = command {
+        action = match command.action {
+            UpdateCommandAction::Check => UpdateAction::Notify,
+            UpdateCommandAction::Install => UpdateAction::AutoInstall,
+        };
+    }
     if matches!(action, UpdateAction::Ignore | UpdateAction::Notify) {
-        return Ok(());
+        return Ok(if command.is_some() {
+            UpdateCommandRunOutcome::CheckCompleted
+        } else {
+            UpdateCommandRunOutcome::NoUpdate
+        });
     }
     let should_install = action == UpdateAction::AutoInstall;
     let version = manifest.version.as_str();
@@ -243,12 +1085,20 @@ fn check_update(manually: bool) -> ResultType<()> {
         if should_install && has_no_active_conns() {
             report_update_event("installing", version, manifest.build_seq, source);
             #[cfg(target_os = "windows")]
-            update_new_version(update_msi, version, manifest.build_seq, source, &file_path);
+            update_new_version(
+                update_msi,
+                version,
+                manifest.build_seq,
+                source,
+                &file_path,
+                command.map(|value| value.command_id.as_str()),
+            )?;
             #[cfg(target_os = "linux")]
             if let Err(err) = install_linux_appimage(&file_path) {
                 log::error!("Failed to install AppImage update: {}", err);
                 report_update_event("rolled_back", version, manifest.build_seq, source);
                 remove_download_artifact(&file_path);
+                return Err(err);
             } else {
                 report_update_event("installed", version, manifest.build_seq, source);
                 remove_download_artifact(&file_path);
@@ -266,6 +1116,7 @@ fn check_update(manually: bool) -> ResultType<()> {
                     } else {
                         UpdateSource::Primary
                     },
+                    command_id: command.map(|value| value.command_id.clone()),
                 };
                 if let Err(err) = crate::platform::request_update_from_dmg_as_root(path, &event) {
                     log::error!("Failed to install verified macOS update: {}", err);
@@ -275,18 +1126,33 @@ fn check_update(manually: bool) -> ResultType<()> {
                         manifest.build_seq,
                         source,
                     );
+                    remove_download_artifact(&file_path);
+                    return Err(err);
                 }
                 remove_download_artifact(&file_path);
             } else {
                 remove_download_artifact(&file_path);
+                bail!("downloaded update path is not valid UTF-8");
             }
         } else if should_install {
-            #[cfg(target_os = "macos")]
             report_update_event("deferred", version, manifest.build_seq, source);
             remove_download_artifact(&file_path);
+            return Ok(UpdateCommandRunOutcome::Deferred);
         }
     }
-    Ok(())
+    #[cfg(target_os = "windows")]
+    if should_install && !update_msi {
+        return Ok(UpdateCommandRunOutcome::AwaitingInstallResult);
+    }
+    #[cfg(target_os = "macos")]
+    if should_install {
+        return Ok(UpdateCommandRunOutcome::AwaitingInstallResult);
+    }
+    Ok(if should_install {
+        UpdateCommandRunOutcome::Installed
+    } else {
+        UpdateCommandRunOutcome::CheckCompleted
+    })
 }
 
 pub fn current_update_target_key() -> ResultType<String> {
@@ -534,6 +1400,67 @@ pub(crate) fn report_update_event(status: &str, version: &str, build_seq: u64, s
     );
 }
 
+fn report_update_command_event(command: &UpdateCommand, status: &str, error_code: &str) -> bool {
+    const EVENTS_URL: &str = "https://rdapi.yan.life/rd/update/v1/events";
+    let Ok(client) = create_http_client_with_url_strict(EVENTS_URL) else {
+        log::warn!("Failed to create update command event HTTP client");
+        return false;
+    };
+    let identity = current_update_client_identity();
+    let payload = serde_json::json!({
+        "client_id": identity.client_id,
+        "client_uuid": identity.client_uuid,
+        "command_id": command.command_id,
+        "command_action": command.action,
+        "status": status,
+        "from_version": crate::VERSION,
+        "from_build_seq": crate::BUILD_SEQ,
+        "product": crate::PRODUCT,
+        "edition": crate::EDITION,
+        "build_number": crate::BUILD_NUMBER,
+        "channel": crate::CHANNEL,
+        "source_commit": crate::SOURCE_COMMIT,
+        "to_version": command.target_version,
+        "to_build_seq": command.target_build_seq,
+        "error_code": error_code,
+        "source": "none",
+    });
+    let Ok(body) = serde_json::to_vec(&payload) else {
+        log::warn!("Failed to serialize update command event");
+        return false;
+    };
+    let Ok(auth) =
+        update_device_auth_headers("POST", EVENTS_URL, &identity, &command.command_id, &body)
+    else {
+        log::warn!("Failed to sign update command event");
+        return false;
+    };
+    match client
+        .post(EVENTS_URL)
+        .header("Content-Type", "application/json")
+        .header("X-RustDesk-Device-ID", auth.device_id)
+        .header("X-RustDesk-Device-Public-Key", auth.public_key)
+        .header("X-RustDesk-Device-Timestamp", auth.timestamp)
+        .header("X-RustDesk-Device-Nonce", auth.nonce)
+        .header("X-RustDesk-Device-Signature", auth.signature)
+        .body(body)
+        .send()
+    {
+        Ok(response) if response.status().is_success() => true,
+        Ok(response) => {
+            log::warn!(
+                "Update command event rejected with HTTP {}",
+                response.status()
+            );
+            false
+        }
+        Err(err) => {
+            log::warn!("Failed to report update command event: {err}");
+            false
+        }
+    }
+}
+
 pub(crate) fn report_update_event_with_origin(
     status: &str,
     from_version: &str,
@@ -558,9 +1485,10 @@ pub(crate) fn report_update_event_with_origin(
         log::warn!("Failed to create update event HTTP client");
         return false;
     };
+    let identity = current_update_client_identity();
     let payload = serde_json::json!({
-        "client_id": crate::get_app_name(),
-        "client_uuid": hex::encode(hbb_common::fingerprint::get_fingerprint(None, None)),
+        "client_id": identity.client_id,
+        "client_uuid": identity.client_uuid,
         "status": status,
         "from_version": from_version,
         "from_build_seq": from_build_seq,
@@ -580,7 +1508,25 @@ pub(crate) fn report_update_event_with_origin(
         },
         "source": source,
     });
-    match client.post(EVENTS_URL).json(&payload).send() {
+    let Ok(body) = serde_json::to_vec(&payload) else {
+        log::warn!("Failed to serialize update event");
+        return false;
+    };
+    let Ok(auth) = update_device_auth_headers("POST", EVENTS_URL, &identity, "", &body) else {
+        log::warn!("Failed to sign update event");
+        return false;
+    };
+    match client
+        .post(EVENTS_URL)
+        .header("Content-Type", "application/json")
+        .header("X-RustDesk-Device-ID", auth.device_id)
+        .header("X-RustDesk-Device-Public-Key", auth.public_key)
+        .header("X-RustDesk-Device-Timestamp", auth.timestamp)
+        .header("X-RustDesk-Device-Nonce", auth.nonce)
+        .header("X-RustDesk-Device-Signature", auth.signature)
+        .body(body)
+        .send()
+    {
         Ok(response) if response.status().is_success() => true,
         Ok(response) => {
             log::warn!("Update event rejected with HTTP {}", response.status());
@@ -591,6 +1537,38 @@ pub(crate) fn report_update_event_with_origin(
             false
         }
     }
+}
+
+pub(crate) fn report_pending_update_terminal(status: &str, event: &PendingUpdateEvent) -> bool {
+    let command_reported = if let Some(command_id) = &event.command_id {
+        let state = load_pending_update_commands()
+            .into_iter()
+            .find(|state| state.command.command_id == *command_id);
+        if state.is_none() && load_processed_update_commands().contains(command_id) {
+            true
+        } else if let Some(state) = state {
+            let (terminal_status, error_code) = if status == "installed" {
+                ("completed", "")
+            } else {
+                ("failed", status)
+            };
+            persist_and_report_update_command_terminal(&state.command, terminal_status, error_code)
+        } else {
+            log::warn!("Missing pending update command {command_id}");
+            return false;
+        }
+    } else {
+        true
+    };
+    let update_reported = report_update_event_with_origin(
+        status,
+        &event.from_version,
+        event.from_build_seq,
+        &event.version,
+        event.build_seq,
+        event.source.as_str(),
+    );
+    update_reported && command_reported
 }
 
 #[cfg(target_os = "linux")]
@@ -622,7 +1600,8 @@ fn update_new_version(
     build_seq: u64,
     source: &str,
     file_path: &PathBuf,
-) {
+    command_id: Option<&str>,
+) -> ResultType<()> {
     log::debug!(
         "New version is downloaded, update begin, update msi: {update_msi}, version: {version}, file: {:?}",
         file_path.to_str()
@@ -644,6 +1623,7 @@ fn update_new_version(
                         );
                         report_update_event("rolled_back", version, build_seq, source);
                         remove_download_artifact(&file_path);
+                        return Err(e.into());
                     }
                 }
             } else {
@@ -658,6 +1638,7 @@ fn update_new_version(
                     } else {
                         UpdateSource::Primary
                     },
+                    command_id: command_id.map(str::to_owned),
                 };
                 let pending_args = pending_event.cli_args().join(" ");
                 let custom_client_staging_dir = if crate::is_custom_client() {
@@ -671,7 +1652,7 @@ fn update_new_version(
                             e
                         );
                         remove_download_artifact(&file_path);
-                        return;
+                        return Err(e.into());
                     }
                     Some(custom_client_staging_dir)
                 } else {
@@ -709,6 +1690,7 @@ fn update_new_version(
                         ));
                     }
                     remove_download_artifact(&file_path);
+                    bail!("failed to launch the downloaded updater");
                 }
             }
         } else {
@@ -717,6 +1699,7 @@ fn update_new_version(
                 std::io::Error::last_os_error()
             );
             remove_download_artifact(&file_path);
+            bail!("current process session is unavailable");
         }
     } else {
         // unreachable!()
@@ -725,7 +1708,9 @@ fn update_new_version(
             file_path.display()
         );
         remove_download_artifact(file_path);
+        bail!("downloaded update path is not valid UTF-8");
     }
+    Ok(())
 }
 
 pub fn get_update_download_file_from_url(url: &str) -> Option<PathBuf> {
@@ -868,6 +1853,7 @@ fn wait_for_failed_update_retry() {
 /// Called from `start_os_service()` which runs as root via LaunchDaemon.
 #[cfg(target_os = "macos")]
 pub fn start_auto_update_macos() {
+    start_update_policy_stream();
     let spawn_result = std::thread::Builder::new()
         .name("rustdesk-auto-update".to_owned())
         .spawn(|| {
@@ -917,14 +1903,7 @@ fn consume_mac_update_result() {
             std::thread::sleep(Duration::from_secs(1));
             continue;
         }
-        if report_update_event_with_origin(
-            &result.status,
-            &result.event.from_version,
-            result.event.from_build_seq,
-            &result.event.version,
-            result.event.build_seq,
-            result.event.source.as_str(),
-        ) {
+        if report_pending_update_terminal(&result.status, &result.event) {
             if !claimed {
                 log::warn!("[root-update] terminal update result was not atomically claimed");
                 return;
@@ -942,7 +1921,7 @@ fn consume_mac_update_result() {
 #[cfg(target_os = "macos")]
 pub fn check_update_as_root() -> ResultType<bool> {
     // Allow-auto-update setting
-    if !config::Config::get_bool_option(keys::OPTION_ALLOW_AUTO_UPDATE) {
+    if !update_option_enabled(&config::Config::get_option(keys::OPTION_ALLOW_AUTO_UPDATE)) {
         log::info!("[root-update] Auto update is disabled, skipping.");
         return Ok(false);
     }
@@ -1018,7 +1997,7 @@ pub fn check_update_as_root() -> ResultType<bool> {
     };
     let action = decide_update_action(
         &response,
-        config::Config::get_bool_option(keys::OPTION_ALLOW_AUTO_UPDATE),
+        update_option_enabled(&config::Config::get_option(keys::OPTION_ALLOW_AUTO_UPDATE)),
     );
     if action != UpdateAction::AutoInstall {
         return Ok(false);
@@ -1091,6 +2070,7 @@ pub fn check_update_as_root() -> ResultType<bool> {
         } else {
             UpdateSource::Primary
         },
+        command_id: None,
     };
     let result = crate::platform::update_from_dmg_as_root(&tmp_path, &version, &event);
     // Clean up download directory

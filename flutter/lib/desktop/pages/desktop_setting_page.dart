@@ -12,6 +12,7 @@ import 'package:flutter_hbb/consts.dart';
 import 'package:flutter_hbb/desktop/pages/desktop_home_page.dart';
 import 'package:flutter_hbb/desktop/pages/desktop_tab_page.dart';
 import 'package:flutter_hbb/desktop/widgets/remote_toolbar.dart';
+import 'package:flutter_hbb/desktop/widgets/update_progress.dart';
 import 'package:flutter_hbb/mobile/widgets/dialog.dart';
 import 'package:flutter_hbb/models/platform_model.dart';
 import 'package:flutter_hbb/models/printer_model.dart';
@@ -57,6 +58,8 @@ enum SettingsTabKey {
   printer,
   about,
 }
+
+bool showRecordingSettingsForEdition({required bool sosMode}) => sosMode;
 
 class DesktopSettingPage extends StatefulWidget {
   final SettingsTabKey initialTabkey;
@@ -417,7 +420,10 @@ class _GeneralState extends State<_General> {
         _Card(title: 'Language', children: [language()]),
         if (!isWeb) hwcodec(),
         if (!isWeb) audio(context),
-        if (!isWeb) record(context),
+        if (!isWeb &&
+            showRecordingSettingsForEdition(
+                sosMode: bind.mainGetBuildinOption(key: 'sos-mode') == 'Y'))
+          record(context),
         if (!isWeb) WaylandCard(),
         other()
       ],
@@ -482,8 +488,6 @@ class _GeneralState extends State<_General> {
   Widget other() {
     final incomingOnly = bind.isIncomingOnly();
     final outgoingOnly = bind.isOutgoingOnly();
-    final showAutoUpdate = (isWindows && bind.mainIsInstalled()) ||
-    (isMacOS && bind.mainIsInstalled() && bind.mainIsInstalledDaemon(prompt: false) && !bind.isCustomClient());
     final children = <Widget>[
       if (!isWeb && !incomingOnly)
         _OptionCheckBox(context, 'Confirm before closing multiple tabs',
@@ -551,20 +555,6 @@ class _GeneralState extends State<_General> {
             ),
           ),
       ],
-      if (!isWeb)
-        _OptionCheckBox(
-          context,
-          'Check for software update on startup',
-          kOptionEnableCheckUpdate,
-          isServer: false,
-        ),
-      if (showAutoUpdate)
-        _OptionCheckBox(
-          context,
-          'Auto update',
-          kOptionAllowAutoUpdate,
-          isServer: true,
-        ),
       if (isWindows && !outgoingOnly)
         _OptionCheckBox(
           context,
@@ -2507,6 +2497,70 @@ class _About extends StatefulWidget {
 }
 
 class _AboutState extends State<_About> {
+  Worker? _checkResultWorker;
+  String _manualCheckRequestId = '';
+
+  @override
+  void initState() {
+    super.initState();
+    _checkResultWorker = ever(updateUiState.checkResultSerial, (_) {
+      if (!mounted ||
+          !isMatchingManualUpdateCheck(
+            pendingRequestId: _manualCheckRequestId,
+            requestOrigin: updateUiState.requestOrigin.value,
+            requestId: updateUiState.requestId.value,
+          )) {
+        return;
+      }
+      setState(() => _manualCheckRequestId = '');
+      final url = updateUiState.updateUrl.value;
+      if (url.isNotEmpty) {
+        _showUpdateConfirmation(url);
+      }
+    });
+  }
+
+  @override
+  void dispose() {
+    _checkResultWorker?.dispose();
+    super.dispose();
+  }
+
+  Future<void> _showUpdateConfirmation(String url) async {
+    final accepted = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Text(translate('Software update')),
+        content: Text(translate('A new version is available. Update now?')),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: Text(translate('Cancel')),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: Text(translate('Update')),
+          ),
+        ],
+      ),
+    );
+    if (accepted == true) {
+      handleUpdate(url);
+    }
+  }
+
+  Future<void> _checkForUpdates() async {
+    if (_manualCheckRequestId.isNotEmpty) return;
+    final requestId = 'manual-${DateTime.now().microsecondsSinceEpoch}';
+    setState(() => _manualCheckRequestId = requestId);
+    stateGlobal.updateStatus.value = softwareUpdateCheckStatus(
+      error: '',
+      updateUrl: '',
+      checking: true,
+    );
+    await bind.mainStartSoftwareUpdateCheck(requestId: requestId);
+  }
+
   @override
   Widget build(BuildContext context) {
     return futureBuilder(future: () async {
@@ -2515,12 +2569,15 @@ class _AboutState extends State<_About> {
       final buildDate = await bind.mainGetBuildDate();
       final fingerprint = await bind.mainGetFingerprint();
       final myId = await bind.mainGetMyId();
+      final updateMetadata =
+          parseLocalUpdateMetadata(await bind.mainGetUpdateMetadata());
       return {
         'license': license,
         'version': version,
         'buildDate': buildDate,
         'fingerprint': fingerprint,
-        'myId': myId
+        'myId': myId,
+        'updateMetadata': updateMetadata,
       };
     }(), hasData: (data) {
       final license = data['license'].toString();
@@ -2528,6 +2585,7 @@ class _AboutState extends State<_About> {
       final buildDate = data['buildDate'].toString();
       final fingerprint = data['fingerprint'].toString();
       final myId = data['myId'].toString();
+      final updateMetadata = data['updateMetadata'] as LocalUpdateMetadata;
       const linkStyle = TextStyle(decoration: TextDecoration.underline);
       final scrollController = ScrollController();
       return SingleChildScrollView(
@@ -2552,6 +2610,42 @@ class _AboutState extends State<_About> {
               SelectionArea(
                   child: Text('${translate('ID')}: $myId')
                       .marginSymmetric(vertical: 4.0)),
+              if (bind.mainGetBuildinOption(key: 'sos-mode') != 'Y')
+                Obx(() {
+                  updateUiState.policyRevision.value;
+                  final latestVersion =
+                      updateUiState.targetVersion.value.isEmpty
+                          ? bind.mainGetNewVersion()
+                          : updateUiState.targetVersion.value;
+                  final currentVersion =
+                      updateUiState.currentVersion.value.isEmpty
+                          ? updateMetadata.version
+                          : updateUiState.currentVersion.value;
+                  final status = updateUiState.error.value.isNotEmpty
+                      ? updateUiState.error.value
+                      : stateGlobal.updateStatus.value;
+                  return StandardAboutUpdateControls(
+                    currentVersion: currentVersion,
+                    latestVersion: latestVersion,
+                    currentBuildSeq: updateUiState.currentBuildSeq.value.isEmpty
+                        ? updateMetadata.buildSeq
+                        : updateUiState.currentBuildSeq.value,
+                    latestBuildSeq: updateUiState.targetBuildSeq.value,
+                    channel: updateUiState.channel.value.isEmpty
+                        ? updateMetadata.channel
+                        : updateUiState.channel.value,
+                    updateStatus: status,
+                    checking: _manualCheckRequestId.isNotEmpty,
+                    checkOnStartup:
+                        mainGetLocalBoolOptionSync(kOptionEnableCheckUpdate),
+                    autoUpdate: mainGetBoolOptionSync(kOptionAllowAutoUpdate),
+                    onCheckOnStartupChanged: (value) =>
+                        mainSetLocalBoolOption(kOptionEnableCheckUpdate, value),
+                    onAutoUpdateChanged: (value) =>
+                        mainSetBoolOption(kOptionAllowAutoUpdate, value),
+                    onCheckUpdate: _checkForUpdates,
+                  ).marginSymmetric(vertical: 8);
+                }),
               InkWell(
                   onTap: () {
                     launchUrlString('https://rustdesk.com/privacy.html');
@@ -2600,6 +2694,129 @@ class _AboutState extends State<_About> {
         ]),
       );
     });
+  }
+}
+
+class StandardAboutUpdateControls extends StatefulWidget {
+  final String currentVersion;
+  final String latestVersion;
+  final String currentBuildSeq;
+  final String latestBuildSeq;
+  final String channel;
+  final String updateStatus;
+  final bool checking;
+  final bool checkOnStartup;
+  final bool autoUpdate;
+  final Future<void> Function(bool) onCheckOnStartupChanged;
+  final Future<void> Function(bool) onAutoUpdateChanged;
+  final Future<void> Function() onCheckUpdate;
+  final String Function(String)? translator;
+
+  const StandardAboutUpdateControls({
+    super.key,
+    required this.currentVersion,
+    required this.latestVersion,
+    this.currentBuildSeq = '',
+    this.latestBuildSeq = '',
+    this.channel = '',
+    this.updateStatus = '',
+    this.checking = false,
+    required this.checkOnStartup,
+    required this.autoUpdate,
+    required this.onCheckOnStartupChanged,
+    required this.onAutoUpdateChanged,
+    required this.onCheckUpdate,
+    this.translator,
+  });
+
+  @override
+  State<StandardAboutUpdateControls> createState() =>
+      _StandardAboutUpdateControlsState();
+}
+
+class _StandardAboutUpdateControlsState
+    extends State<StandardAboutUpdateControls> {
+  late bool _checkOnStartup;
+  late bool _autoUpdate;
+
+  @override
+  void initState() {
+    super.initState();
+    _checkOnStartup = widget.checkOnStartup;
+    _autoUpdate = widget.autoUpdate;
+  }
+
+  @override
+  void didUpdateWidget(covariant StandardAboutUpdateControls oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.checkOnStartup != widget.checkOnStartup) {
+      _checkOnStartup = widget.checkOnStartup;
+    }
+    if (oldWidget.autoUpdate != widget.autoUpdate) {
+      _autoUpdate = widget.autoUpdate;
+    }
+  }
+
+  Future<void> _setCheckOnStartup(bool value) async {
+    await widget.onCheckOnStartupChanged(value);
+    if (mounted) setState(() => _checkOnStartup = value);
+  }
+
+  Future<void> _setAutoUpdate(bool value) async {
+    await widget.onAutoUpdateChanged(value);
+    if (mounted) setState(() => _autoUpdate = value);
+  }
+
+  String _translate(String value) =>
+      widget.translator?.call(value) ?? translate(value);
+
+  String _versionText(String version, String buildSeq) => buildSeq.isEmpty
+      ? version
+      : '$version (${_translate('Build')} $buildSeq)';
+
+  @override
+  Widget build(BuildContext context) {
+    final latest = widget.latestVersion.isEmpty
+        ? _translate('Not checked')
+        : _versionText(widget.latestVersion, widget.latestBuildSeq);
+    final current = _versionText(widget.currentVersion, widget.currentBuildSeq);
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const Divider(),
+        Text('${_translate('Current version')}: $current'),
+        Text('${_translate('Latest version')}: $latest'),
+        if (widget.channel.isNotEmpty)
+          Text('${_translate('Channel')}: ${widget.channel}'),
+        if (widget.updateStatus.isNotEmpty)
+          Text('${_translate('Status')}: ${_translate(widget.updateStatus)}'),
+        CheckboxListTile(
+          contentPadding: EdgeInsets.zero,
+          controlAffinity: ListTileControlAffinity.leading,
+          dense: true,
+          title: Text(_translate('Check for software update on startup')),
+          value: _checkOnStartup,
+          onChanged: (value) {
+            if (value != null) _setCheckOnStartup(value);
+          },
+        ),
+        CheckboxListTile(
+          contentPadding: EdgeInsets.zero,
+          controlAffinity: ListTileControlAffinity.leading,
+          dense: true,
+          title: Text(_translate('Auto update')),
+          value: _autoUpdate,
+          onChanged: (value) {
+            if (value != null) _setAutoUpdate(value);
+          },
+        ),
+        OutlinedButton.icon(
+          onPressed: widget.checking ? null : widget.onCheckUpdate,
+          icon: const Icon(Icons.refresh),
+          label: Text(_translate('Check for updates')),
+        ),
+      ],
+    );
   }
 }
 

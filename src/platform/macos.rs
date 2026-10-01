@@ -1386,6 +1386,15 @@ pub fn update_from_dmg_as_root(
     let daemon_label = format!("com.carriez.{}_service", app_name);
     let agent_label = format!("com.carriez.{}_server", app_name);
     let script_path = format!("{}/rustdesk_update.sh", tmp_dir);
+    let command_id = event.command_id.as_deref().unwrap_or_default();
+    if !command_id.is_empty()
+        && (command_id.len() > 128
+            || !command_id.bytes().all(|byte| {
+                byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b':')
+            }))
+    {
+        bail!("[root-update] unsafe update command id");
+    }
     let script = format!(
         r#"#!/bin/sh
 rollback_done=0
@@ -1403,6 +1412,7 @@ write_result() {{
         printf 'to_version=%s\n' '{to_version}'
         printf 'to_build_seq=%s\n' '{to_build_seq}'
         printf 'source=%s\n' '{source}'
+        printf 'command_id=%s\n' '{command_id}'
     }} > "$result_tmp" && chmod 600 "$result_tmp" && mv -f "$result_tmp" "{result_path}"
     result_status_code=$?
     set +C
@@ -1908,6 +1918,7 @@ rm -rf {tmp_dir}
         to_version = event.version,
         to_build_seq = event.build_seq,
         source = event.source.as_str(),
+        command_id = command_id,
     );
 
     {

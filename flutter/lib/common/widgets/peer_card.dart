@@ -21,7 +21,14 @@ typedef PopupMenuEntryBuilder = Future<List<mod_menu.PopupMenuEntry<String>>>
 
 enum PeerUiType { grid, tile, list }
 
-final peerCardUiType = PeerUiType.grid.obs;
+final peerCardUiType = PeerUiType.tile.obs;
+
+const showPeerPlatformVisual = false;
+
+String peerCardPrimaryText(Peer peer) =>
+    peer.alias.isEmpty ? formatID(peer.id) : peer.alias;
+
+String peerCardSecondaryText(Peer peer) => peer.alias.isEmpty ? '' : peer.id;
 
 bool? hideUsernameOnCard;
 
@@ -132,9 +139,7 @@ class _PeerCardState extends State<_PeerCard>
   }
 
   makeChild(bool isPortrait, Peer peer) {
-    final name = hideUsernameOnCard == true
-        ? peer.hostname
-        : '${peer.username}${peer.username.isNotEmpty && peer.hostname.isNotEmpty ? '@' : ''}${peer.hostname}';
+    final secondaryText = peerCardSecondaryText(peer);
     final greyStyle = TextStyle(
         fontSize: 11,
         color: Theme.of(context).textTheme.titleLarge?.color?.withOpacity(0.6));
@@ -143,39 +148,42 @@ class _PeerCardState extends State<_PeerCard>
     return Row(
       mainAxisSize: MainAxisSize.max,
       children: [
-        Container(
-            decoration: BoxDecoration(
-              color: str2color('${peer.id}${peer.platform}', 0x7f),
-              borderRadius: isPortrait
-                  ? BorderRadius.circular(_tileRadius)
-                  : BorderRadius.only(
-                      topLeft: Radius.circular(_tileRadius),
-                      bottomLeft: Radius.circular(_tileRadius),
+        if (showPeerPlatformVisual)
+          Container(
+              decoration: BoxDecoration(
+                color: str2color('${peer.id}${peer.platform}', 0x7f),
+                borderRadius: isPortrait
+                    ? BorderRadius.circular(_tileRadius)
+                    : BorderRadius.only(
+                        topLeft: Radius.circular(_tileRadius),
+                        bottomLeft: Radius.circular(_tileRadius),
+                      ),
+              ),
+              alignment: Alignment.center,
+              width: isPortrait ? 50 : 42,
+              height: isPortrait ? 50 : null,
+              child: Stack(
+                children: [
+                  getPlatformImage(peer.platform, size: isPortrait ? 38 : 30)
+                      .paddingAll(6),
+                  if (_shouldBuildPasswordIcon(peer))
+                    Positioned(
+                      top: 1,
+                      left: 1,
+                      child: Icon(Icons.key, size: 6, color: Colors.white),
                     ),
-            ),
-            alignment: Alignment.center,
-            width: isPortrait ? 50 : 42,
-            height: isPortrait ? 50 : null,
-            child: Stack(
-              children: [
-                getPlatformImage(peer.platform, size: isPortrait ? 38 : 30)
-                    .paddingAll(6),
-                if (_shouldBuildPasswordIcon(peer))
-                  Positioned(
-                    top: 1,
-                    left: 1,
-                    child: Icon(Icons.key, size: 6, color: Colors.white),
-                  ),
-              ],
-            )),
+                ],
+              )),
         Expanded(
           child: Container(
             decoration: BoxDecoration(
               color: Theme.of(context).colorScheme.background,
-              borderRadius: BorderRadius.only(
-                topRight: Radius.circular(_tileRadius),
-                bottomRight: Radius.circular(_tileRadius),
-              ),
+              borderRadius: showPeerPlatformVisual
+                  ? BorderRadius.only(
+                      topRight: Radius.circular(_tileRadius),
+                      bottomRight: Radius.circular(_tileRadius),
+                    )
+                  : BorderRadius.circular(_tileRadius),
             ),
             child: Row(
               children: [
@@ -186,28 +194,29 @@ class _PeerCardState extends State<_PeerCard>
                         getOnline(isPortrait ? 4 : 8, peer.online),
                         Expanded(
                             child: Text(
-                          peer.alias.isEmpty ? formatID(peer.id) : peer.alias,
+                          peerCardPrimaryText(peer),
                           overflow: TextOverflow.ellipsis,
                           style: Theme.of(context).textTheme.titleSmall,
                         )),
                       ]).marginOnly(top: isPortrait ? 0 : 2),
                       Row(
                         children: [
-                          Flexible(
-                            child: Tooltip(
-                              message: name,
-                              waitDuration: const Duration(seconds: 1),
-                              child: Align(
-                                alignment: Alignment.centerLeft,
-                                child: Text(
-                                  name,
-                                  style: isPortrait ? null : greyStyle,
-                                  textAlign: TextAlign.start,
-                                  overflow: TextOverflow.ellipsis,
+                          if (secondaryText.isNotEmpty)
+                            Flexible(
+                              child: Tooltip(
+                                message: secondaryText,
+                                waitDuration: const Duration(seconds: 1),
+                                child: Align(
+                                  alignment: Alignment.centerLeft,
+                                  child: Text(
+                                    secondaryText,
+                                    style: isPortrait ? null : greyStyle,
+                                    textAlign: TextAlign.start,
+                                    overflow: TextOverflow.ellipsis,
+                                  ),
                                 ),
                               ),
                             ),
-                          ),
                           if (showNote)
                             Expanded(
                               child: Tooltip(
@@ -282,9 +291,8 @@ class _PeerCardState extends State<_PeerCard>
       BuildContext context, Peer peer, Rx<BoxDecoration?> deco) {
     hideUsernameOnCard ??=
         bind.mainGetBuildinOption(key: kHideUsernameOnCard) == 'Y';
-    final name = hideUsernameOnCard == true
-        ? peer.hostname
-        : '${peer.username}${peer.username.isNotEmpty && peer.hostname.isNotEmpty ? '@' : ''}${peer.hostname}';
+    final primaryText = peerCardPrimaryText(peer);
+    final secondaryText = peerCardSecondaryText(peer);
     final child = Card(
       color: Colors.transparent,
       elevation: 0,
@@ -310,19 +318,20 @@ class _PeerCardState extends State<_PeerCard>
                           child: Column(
                             crossAxisAlignment: CrossAxisAlignment.center,
                             children: [
-                              Container(
-                                padding: const EdgeInsets.all(6),
-                                child:
-                                    getPlatformImage(peer.platform, size: 60),
-                              ),
+                              if (showPeerPlatformVisual)
+                                Container(
+                                  padding: const EdgeInsets.all(6),
+                                  child:
+                                      getPlatformImage(peer.platform, size: 60),
+                                ),
                               Row(
                                 children: [
                                   Expanded(
                                     child: Tooltip(
-                                      message: name,
+                                      message: secondaryText,
                                       waitDuration: const Duration(seconds: 1),
                                       child: Text(
-                                        name,
+                                        secondaryText,
                                         style: const TextStyle(
                                             color: Colors.white70,
                                             fontSize: 12),
@@ -368,7 +377,7 @@ class _PeerCardState extends State<_PeerCard>
                         getOnline(8, peer.online),
                         Expanded(
                             child: Text(
-                          peer.alias.isEmpty ? formatID(peer.id) : peer.alias,
+                          primaryText,
                           overflow: TextOverflow.ellipsis,
                           style: Theme.of(context).textTheme.titleSmall,
                         )),
@@ -1554,7 +1563,7 @@ class TagPainter extends CustomPainter {
 }
 
 void connectInPeerTab(BuildContext context, Peer peer, PeerTabIndex tab,
-    {    bool isFileTransfer = false,
+    {bool isFileTransfer = false,
     bool isViewCamera = false,
     bool isTcpTunneling = false,
     bool isRDP = false,

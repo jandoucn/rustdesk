@@ -55,9 +55,9 @@ pub use flexi_logger;
 pub mod log_throttle;
 pub mod rx_probe;
 pub mod stream;
-pub mod websocket;
 #[cfg(feature = "webrtc")]
 pub mod webrtc;
+pub mod websocket;
 #[cfg(any(target_os = "android", target_os = "ios"))]
 pub use rustls_platform_verifier;
 pub use stream::Stream;
@@ -65,9 +65,9 @@ pub use whoami;
 pub mod tls;
 pub mod verifier;
 pub use async_recursion;
+pub use libloading;
 #[cfg(target_os = "linux")]
 pub use users;
-pub use libloading;
 #[cfg(target_os = "linux")]
 pub use x11;
 
@@ -231,25 +231,54 @@ pub fn gen_version() {
     let mut file = File::create("./src/version.rs").unwrap();
     let source = std::fs::read_to_string("version.json").unwrap_or_default();
     let value = |key: &str| -> String {
-        source.lines().find_map(|line| {
-            let (k, v) = line.split_once(':')?;
-            if k.trim().trim_matches('"') != key { return None; }
-            Some(v.trim().trim_end_matches(',').trim().trim_matches('"').to_owned())
-        }).unwrap_or_default()
+        source
+            .lines()
+            .find_map(|line| {
+                let (k, v) = line.split_once(':')?;
+                if k.trim().trim_matches('"') != key {
+                    return None;
+                }
+                Some(
+                    v.trim()
+                        .trim_end_matches(',')
+                        .trim()
+                        .trim_matches('"')
+                        .to_owned(),
+                )
+            })
+            .unwrap_or_default()
     };
     let version = value("version");
     let build_seq = value("build_seq");
-    file.write_all(format!("pub const VERSION: &str = \"{version}\";\n").as_bytes()).ok();
-    file.write_all(format!("pub const PRODUCT: &str = \"{}\";\n", value("product")).as_bytes()).ok();
+    file.write_all(format!("pub const VERSION: &str = \"{version}\";\n").as_bytes())
+        .ok();
+    file.write_all(format!("pub const PRODUCT: &str = \"{}\";\n", value("product")).as_bytes())
+        .ok();
     let edition = std::env::var("RUSTDESK_EDITION").unwrap_or_else(|_| value("edition"));
-    file.write_all(format!("pub const EDITION: &str = \"{edition}\";\n").as_bytes()).ok();
-    file.write_all(format!("pub const BUILD_NUMBER: &str = \"{}\";\n", value("build_number")).as_bytes()).ok();
-    file.write_all(format!("pub const BUILD_SEQ: u64 = {build_seq};\n").as_bytes()).ok();
-    file.write_all(format!("pub const CHANNEL: &str = \"{}\";\n", value("channel")).as_bytes()).ok();
-    let source_commit = std::process::Command::new("git").args(["rev-parse", "HEAD"]).output()
-        .ok().filter(|o| o.status.success()).map(|o| String::from_utf8_lossy(&o.stdout).trim().to_owned())
-        .filter(|s| !s.is_empty()).unwrap_or_else(|| value("source_commit"));
-    file.write_all(format!("pub const SOURCE_COMMIT: &str = \"{source_commit}\";\n").as_bytes()).ok();
+    file.write_all(format!("pub const EDITION: &str = \"{edition}\";\n").as_bytes())
+        .ok();
+    file.write_all(
+        format!(
+            "pub const BUILD_NUMBER: &str = \"{}\";\n",
+            value("build_number")
+        )
+        .as_bytes(),
+    )
+    .ok();
+    file.write_all(format!("pub const BUILD_SEQ: u64 = {build_seq};\n").as_bytes())
+        .ok();
+    file.write_all(format!("pub const CHANNEL: &str = \"{}\";\n", value("channel")).as_bytes())
+        .ok();
+    let source_commit = std::process::Command::new("git")
+        .args(["rev-parse", "HEAD"])
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_owned())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| value("source_commit"));
+    file.write_all(format!("pub const SOURCE_COMMIT: &str = \"{source_commit}\";\n").as_bytes())
+        .ok();
     // generate build date
     let build_date = format!("{}", chrono::Local::now().format("%Y-%m-%d %H:%M"));
     file.write_all(
@@ -559,29 +588,49 @@ pub struct VersionCheckResponse {
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
 pub struct UpdateManifest {
-    #[serde(default)] pub version: String,
-    #[serde(default)] pub build_number: String,
-    #[serde(default)] pub build_seq: u64,
-    #[serde(default)] pub product: String,
-    #[serde(default)] pub edition: String,
-    #[serde(default)] pub channel: String,
-    #[serde(default)] pub source_commit: String,
-    #[serde(default)] pub targets: std::collections::HashMap<String, UpdateTarget>,
+    #[serde(default)]
+    pub version: String,
+    #[serde(default)]
+    pub build_number: String,
+    #[serde(default)]
+    pub build_seq: u64,
+    #[serde(default)]
+    pub product: String,
+    #[serde(default)]
+    pub edition: String,
+    #[serde(default)]
+    pub channel: String,
+    #[serde(default)]
+    pub source_commit: String,
+    #[serde(default)]
+    pub targets: std::collections::HashMap<String, UpdateTarget>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
 pub struct UpdateTarget {
-    #[serde(default)] pub primary: String,
-    #[serde(default)] pub mirrors: Vec<String>,
-    #[serde(default)] pub size: u64,
-    #[serde(default)] pub sha256: String,
-    #[serde(default)] pub signature: String,
-    #[serde(default)] pub signature_key_id: String,
+    #[serde(default)]
+    pub primary: String,
+    #[serde(default)]
+    pub mirrors: Vec<String>,
+    #[serde(default)]
+    pub size: u64,
+    #[serde(default)]
+    pub sha256: String,
+    #[serde(default)]
+    pub signature: String,
+    #[serde(default)]
+    pub signature_key_id: String,
 }
 
-pub fn is_newer_version(version: &str, build_seq: u64, current_version: &str, current_build_seq: u64) -> bool {
+pub fn is_newer_version(
+    version: &str,
+    build_seq: u64,
+    current_version: &str,
+    current_build_seq: u64,
+) -> bool {
     get_version_number(version) > get_version_number(current_version)
-        || (get_version_number(version) == get_version_number(current_version) && build_seq > current_build_seq)
+        || (get_version_number(version) == get_version_number(current_version)
+            && build_seq > current_build_seq)
 }
 
 pub const VER_TYPE_RUSTDESK_CLIENT: &str = "rustdesk-client";

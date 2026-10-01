@@ -52,6 +52,14 @@ String _toolbarEdgeToString(_ToolbarEdge e) {
   }
 }
 
+enum StandardHiddenRemoteToolbarAction { textChat, voiceCall, recording }
+
+bool showRemoteToolbarActionForEdition({
+  required StandardHiddenRemoteToolbarAction action,
+  required bool sosMode,
+}) =>
+    sosMode;
+
 bool _isHorizontalEdge(_ToolbarEdge e) =>
     e == _ToolbarEdge.top || e == _ToolbarEdge.bottom;
 
@@ -844,7 +852,11 @@ class _RemoteToolbarState extends State<RemoteToolbar> {
     if (widget.ffi.connType == ConnType.defaultConn) {
       toolbarItems.add(_KeyboardMenu(id: widget.id, ffi: widget.ffi));
     }
-    toolbarItems.add(_ChatMenu(id: widget.id, ffi: widget.ffi));
+    if (showRemoteToolbarActionForEdition(
+        action: StandardHiddenRemoteToolbarAction.textChat,
+        sosMode: bind.mainGetBuildinOption(key: 'sos-mode') == 'Y')) {
+      toolbarItems.add(_ChatMenu(id: widget.id, ffi: widget.ffi));
+    }
     toolbarItems.add(_CloseMenu(id: widget.id, ffi: widget.ffi));
     final toolbarBorderRadius = BorderRadius.all(Radius.circular(4.0));
     // innerAxis: how the toolbar icons themselves flow.

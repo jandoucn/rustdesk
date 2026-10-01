@@ -4072,25 +4072,142 @@ void earlyAssert() {
   assert('\1' == '1');
 }
 
+class UpdateUiState {
+  final targetVersion = ''.obs;
+  final targetBuildSeq = ''.obs;
+  final currentVersion = ''.obs;
+  final currentBuildSeq = ''.obs;
+  final channel = ''.obs;
+  final mode = ''.obs;
+  final updateUrl = ''.obs;
+  final policyRevision = (-1).obs;
+  final checkResultSerial = 0.obs;
+  final requestOrigin = ''.obs;
+  final requestId = ''.obs;
+  final error = ''.obs;
+
+  void applyCheckResult(Map<String, dynamic> event) {
+    targetVersion.value = event['target_version']?.toString() ?? '';
+    targetBuildSeq.value = event['target_build_seq']?.toString() ?? '';
+    currentVersion.value = event['current_version']?.toString() ?? '';
+    currentBuildSeq.value = event['current_build_seq']?.toString() ?? '';
+    channel.value = event['channel']?.toString() ?? '';
+    mode.value = event['mode']?.toString() ?? '';
+    updateUrl.value = event['url']?.toString() ?? '';
+    requestOrigin.value = event['request_origin']?.toString() ?? '';
+    requestId.value = event['request_id']?.toString() ?? '';
+    error.value = event['error']?.toString() ?? '';
+    checkResultSerial.value++;
+  }
+
+  void applyPolicyRevision(dynamic value) {
+    final revision = value is int ? value : int.tryParse('$value');
+    if (revision != null && revision >= policyRevision.value) {
+      policyRevision.value = revision;
+    }
+  }
+}
+
+final updateUiState = UpdateUiState();
+
+class LocalUpdateMetadata {
+  final String version;
+  final String buildSeq;
+  final String channel;
+
+  const LocalUpdateMetadata({
+    required this.version,
+    required this.buildSeq,
+    required this.channel,
+  });
+}
+
+LocalUpdateMetadata parseLocalUpdateMetadata(String value) {
+  final decoded = jsonDecode(value);
+  if (decoded is! Map<String, dynamic>) {
+    throw const FormatException('Invalid local update metadata');
+  }
+  return LocalUpdateMetadata(
+    version: decoded['version']?.toString() ?? '',
+    buildSeq: decoded['build_seq']?.toString() ?? '',
+    channel: decoded['channel']?.toString() ?? '',
+  );
+}
+
+int? updatePolicyRevision(dynamic value) =>
+    value is int ? value : int.tryParse('$value');
+
+bool shouldApplyUpdatePolicy({
+  required int currentRevision,
+  required dynamic incomingRevision,
+}) {
+  final revision = updatePolicyRevision(incomingRevision);
+  return revision != null && revision > currentRevision;
+}
+
+bool shouldCheckSoftwareUpdateOnStartup(String option) => option == 'Y';
+
+bool isMatchingManualUpdateCheck({
+  required String pendingRequestId,
+  required String requestOrigin,
+  required String requestId,
+}) =>
+    pendingRequestId.isNotEmpty &&
+    requestOrigin == 'manual' &&
+    requestId == pendingRequestId;
+
+String softwareUpdateCheckStatus({
+  required String error,
+  required String updateUrl,
+  bool checking = false,
+}) {
+  if (checking) return 'Checking for updates';
+  if (error.isNotEmpty) return error;
+  if (updateUrl.isNotEmpty) return 'Update available';
+  return 'Up to date';
+}
+
 void checkUpdate() {
   if (!isWeb) {
     platformFFI.registerEventHandler(
         kCheckSoftwareUpdateFinish, kCheckSoftwareUpdateFinish,
         (Map<String, dynamic> evt) async {
-      if (evt['url'] is String) {
-        stateGlobal.updateUrl.value = evt['url'];
-        stateGlobal.updateStatus.value = '';
-      }
+      updateUiState.applyCheckResult(evt);
+      stateGlobal.updateUrl.value = updateUiState.updateUrl.value;
+      stateGlobal.updateStatus.value = softwareUpdateCheckStatus(
+        error: updateUiState.error.value,
+        updateUrl: stateGlobal.updateUrl.value,
+      );
     });
-    platformFFI.registerEventHandler(
-        kSoftwareUpdateEvent, kSoftwareUpdateEvent,
+    platformFFI.registerEventHandler(kSoftwareUpdateEvent, kSoftwareUpdateEvent,
         (Map<String, dynamic> evt) async {
       if (evt['status'] is String) {
         stateGlobal.updateStatus.value = evt['status'];
       }
     });
+    platformFFI.registerEventHandler(kUpdatePolicyChanged, kUpdatePolicyChanged,
+        (Map<String, dynamic> evt) async {
+      if (!shouldApplyUpdatePolicy(
+          currentRevision: updateUiState.policyRevision.value,
+          incomingRevision: evt['policy_revision'])) {
+        return;
+      }
+      final checkOnStartup = evt['enable_check_update'];
+      if (checkOnStartup is bool) {
+        await mainSetLocalBoolOption(kOptionEnableCheckUpdate, checkOnStartup);
+      }
+      final autoUpdate = evt['allow_auto_update'];
+      if (autoUpdate is bool) {
+        await mainSetBoolOption(kOptionAllowAutoUpdate, autoUpdate);
+      }
+      updateUiState.applyPolicyRevision(evt['policy_revision']);
+      updateUiState.policyRevision.refresh();
+    });
     Timer(const Duration(seconds: 1), () async {
-      bind.mainGetSoftwareUpdateUrl();
+      if (shouldCheckSoftwareUpdateOnStartup(
+          bind.mainGetLocalOption(key: kOptionEnableCheckUpdate))) {
+        bind.mainGetSoftwareUpdateUrl();
+      }
     });
   }
 }

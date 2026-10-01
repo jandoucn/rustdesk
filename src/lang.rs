@@ -17,8 +17,11 @@ mod es;
 mod et;
 mod eu;
 mod fa;
-mod gu;
+mod fi;
 mod fr;
+mod ge;
+mod gl;
+mod gu;
 mod he;
 mod hi;
 mod hr;
@@ -30,6 +33,7 @@ mod ko;
 mod kz;
 mod lt;
 mod lv;
+mod ml;
 mod nb;
 mod nl;
 mod pl;
@@ -45,17 +49,13 @@ mod sl;
 mod sq;
 mod sr;
 mod sv;
+mod ta;
 mod th;
 mod tr;
 mod tw;
 mod uk;
 mod ur;
 mod vi;
-mod ta;
-mod ge;
-mod fi;
-mod ml;
-mod gl;
 
 pub const LANGS: &[(&str, &str)] = &[
     ("en", "English"),
@@ -154,7 +154,8 @@ fn resolve_lang(saved_lang: &str, locale: &str, cjk_fallback: bool) -> String {
         // pt-PT as its parent (Angola, Mozambique, Cape Verde, etc.),
         // so it should resolve to European Portuguese.
         if locale.starts_with("pt") {
-            lang = (if locale == "pt" || locale.starts_with("pt-br") || locale.starts_with("pt_br") {
+            lang = (if locale == "pt" || locale.starts_with("pt-br") || locale.starts_with("pt_br")
+            {
                 "pt-br"
             } else {
                 "pt-pt"
@@ -316,6 +317,30 @@ fn extract_placeholder(input: &str) -> (String, Option<String>) {
 }
 
 mod test {
+    #[cfg(test)]
+    const UPDATE_ABOUT_KEYS: &[&str] = &[
+        "Current version",
+        "Latest version",
+        "Build",
+        "Channel",
+        "Not checked",
+        "Check for updates",
+        "Checking for updates",
+        "Update available",
+        "Up to date",
+        "A new version is available. Update now?",
+    ];
+
+    #[test]
+    fn test_simplified_chinese_contains_about_update_strings() {
+        for key in UPDATE_ABOUT_KEYS {
+            assert!(
+                super::cn::T.get(key).is_some_and(|value| !value.is_empty()),
+                "missing simplified Chinese update string: {key}"
+            );
+        }
+    }
+
     #[test]
     fn test_extract_placeholders() {
         use super::extract_placeholder as f;

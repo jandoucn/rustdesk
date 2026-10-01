@@ -261,14 +261,7 @@ pub fn core_main() -> Option<Vec<String>> {
                     } else {
                         failure_status
                     };
-                    crate::updater::report_update_event_with_origin(
-                        status,
-                        &event.from_version,
-                        event.from_build_seq,
-                        &event.version,
-                        event.build_seq,
-                        event.source.as_str(),
-                    );
+                    crate::updater::report_pending_update_terminal(status, &event);
                 }
                 let text = match update_result {
                     Ok(_) => "Updated successfully!".to_string(),
@@ -374,7 +367,9 @@ pub fn core_main() -> Option<Vec<String>> {
                 let result = if !is_root() {
                     Err(hbb_common::anyhow::anyhow!("root update requires root"))
                 } else if args.len() < 3 {
-                    Err(hbb_common::anyhow::anyhow!("root update arguments are incomplete"))
+                    Err(hbb_common::anyhow::anyhow!(
+                        "root update arguments are incomplete"
+                    ))
                 } else if let Some(event) = pending_event {
                     platform::update_from_dmg_as_root(&args[1], &args[2], &event)
                 } else {

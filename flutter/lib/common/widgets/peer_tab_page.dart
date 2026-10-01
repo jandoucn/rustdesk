@@ -25,6 +25,26 @@ import 'package:pull_down_button/pull_down_button.dart';
 import '../../common.dart';
 import '../../models/platform_model.dart';
 
+enum AddressBookToolbarAction { tags, search, refresh, multiSelection }
+
+const addressBookToolbarOrder = [
+  AddressBookToolbarAction.tags,
+  AddressBookToolbarAction.search,
+  AddressBookToolbarAction.refresh,
+  AddressBookToolbarAction.multiSelection,
+];
+
+PeerUiType peerUiTypeFromLocalOption(String value) {
+  switch (value) {
+    case '0':
+      return PeerUiType.grid;
+    case '2':
+      return PeerUiType.list;
+    default:
+      return PeerUiType.tile;
+  }
+}
+
 class PeerTabPage extends StatefulWidget {
   const PeerTabPage({Key? key}) : super(key: key);
   @override
@@ -77,13 +97,7 @@ class _PeerTabPageState extends State<PeerTabPage>
 
   void _loadLocalOptions() {
     final uiType = bind.getLocalFlutterOption(k: kOptionPeerCardUiType);
-    if (uiType != '') {
-      peerCardUiType.value = int.parse(uiType) == 0
-          ? PeerUiType.grid
-          : int.parse(uiType) == 1
-              ? PeerUiType.tile
-              : PeerUiType.list;
-    }
+    peerCardUiType.value = peerUiTypeFromLocalOption(uiType);
     hideAbTagsPanel.value =
         bind.mainGetLocalOption(key: kOptionHideAbTagsPanel) == 'Y';
   }
@@ -551,24 +565,35 @@ class _PeerTabPageState extends State<PeerTabPage>
 
   List<Widget> _landscapeRightActions(BuildContext context) {
     final model = Provider.of<PeerTabModel>(context);
+    final orderedActions = <AddressBookToolbarAction, List<Widget>>{
+      AddressBookToolbarAction.tags: [
+        Offstage(
+          offstage: model.currentTab != PeerTabIndex.ab.index,
+          child: _toggleTags(),
+        )
+      ],
+      AddressBookToolbarAction.search: [
+        const PeerSearchBar().marginOnly(right: 13)
+      ],
+      AddressBookToolbarAction.refresh: [
+        _createRefresh(
+            index: PeerTabIndex.ab, loading: gFFI.abModel.currentAbLoading),
+        _createRefresh(
+            index: PeerTabIndex.group, loading: gFFI.groupModel.groupLoading),
+      ],
+      AddressBookToolbarAction.multiSelection: [
+        Offstage(
+          offstage: model.currentTabCachedPeers.isEmpty,
+          child: _createMultiSelection(),
+        )
+      ],
+    };
     return [
-      const PeerSearchBar().marginOnly(right: 13),
-      _createRefresh(
-          index: PeerTabIndex.ab, loading: gFFI.abModel.currentAbLoading),
-      _createRefresh(
-          index: PeerTabIndex.group, loading: gFFI.groupModel.groupLoading),
-      Offstage(
-        offstage: model.currentTabCachedPeers.isEmpty,
-        child: _createMultiSelection(),
-      ),
+      for (final action in addressBookToolbarOrder) ...orderedActions[action]!,
       _createPeerViewTypeSwitch(context),
       Offstage(
         offstage: model.currentTab == PeerTabIndex.recent.index,
         child: PeerSortDropdown(),
-      ),
-      Offstage(
-        offstage: model.currentTab != PeerTabIndex.ab.index,
-        child: _toggleTags(),
       ),
     ];
   }

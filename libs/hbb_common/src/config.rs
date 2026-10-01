@@ -3564,15 +3564,9 @@ mod tests {
         );
 
         let explicit_original = UserDefaultConfig {
-            options: HashMap::from([(
-                keys::OPTION_VIEW_STYLE.to_owned(),
-                "original".to_owned(),
-            )]),
+            options: HashMap::from([(keys::OPTION_VIEW_STYLE.to_owned(), "original".to_owned())]),
         };
-        assert_eq!(
-            explicit_original.get(keys::OPTION_VIEW_STYLE),
-            "original"
-        );
+        assert_eq!(explicit_original.get(keys::OPTION_VIEW_STYLE), "original");
     }
 
     #[test]

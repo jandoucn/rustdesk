@@ -11,16 +11,13 @@ use crate::{
     input::*,
     ui_interface::{self, *},
 };
+use base::{config::keys, fs};
 use flutter_rust_bridge::{StreamSink, SyncReturn};
 use hbb_common::{
     config::{self, LocalConfig, PeerConfig, PeerInfoSerde},
     lazy_static, log,
     rendezvous_proto::ConnType,
     ResultType,
-};
-use base::{
-    config::keys,
-    fs,
 };
 use std::{
     collections::HashMap,
@@ -51,6 +48,8 @@ fn initialize(app_dir: &str, custom_client_config: &str) {
     } else {
         crate::read_custom_client(custom_client_config);
     }
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+    crate::updater::start_update_policy_stream();
     #[cfg(target_os = "android")]
     {
         // flexi_logger can't work when android_logger initialized.
@@ -1138,6 +1137,15 @@ pub fn main_get_version() -> String {
     get_version()
 }
 
+pub fn main_get_update_metadata() -> String {
+    serde_json::json!({
+        "version": crate::VERSION,
+        "build_seq": crate::BUILD_SEQ,
+        "channel": crate::CHANNEL,
+    })
+    .to_string()
+}
+
 pub fn main_get_fav() -> Vec<String> {
     get_fav()
 }
@@ -1788,7 +1796,21 @@ pub fn main_get_last_remote_id() -> String {
 }
 
 pub fn main_get_software_update_url() {
-    crate::common::check_software_update();
+    std::thread::spawn(|| {
+        if let Err(err) = crate::common::do_check_software_update() {
+            log::error!("Manual software update check failed: {err}");
+        }
+    });
+}
+
+pub fn main_start_software_update_check(request_id: String) {
+    std::thread::spawn(move || {
+        if let Err(err) =
+            crate::common::do_check_software_update_with_context("manual", &request_id)
+        {
+            log::error!("Manual software update check failed: {err}");
+        }
+    });
 }
 
 pub fn main_get_home_dir() -> String {
@@ -2912,8 +2934,7 @@ pub fn main_set_common(_key: String, _value: String) {
 
 pub fn session_set_common(session_id: SessionID, key: String, value: String) {
     if let Some(s) = sessions::get_session_by_session_id(&session_id) {
-        if key == "continue-insecure-connection"
-        {
+        if key == "continue-insecure-connection" {
             s.continue_insecure_connection(value == "Y");
             return;
         }

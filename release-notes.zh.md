@@ -33,8 +33,11 @@
 - 登录和地址簿兼容旧版 rustdesk-api。
 - Windows 和 Android 控制 macOS 时自动交换 Command 与 Control；macOS 控制 macOS 时保持原有键位。
 - 每次普通连接会关闭上次持久化的浏览模式；从「浏览模式」入口连接时仍只查看画面，已有会话切换窗口时保持当前状态。
-- 远程界面不再显示录制和电话入口，Android 端同时移除消息入口；桌面端仍保留文字聊天。
+- 远程连接顶部工具栏不再显示文字聊天、语音通话和开始录屏入口。
 - 地址簿主机菜单不再显示「打开 Web 控制台以执行更多操作」。
+- standard 版隐藏设置里的录屏选项、首页底部的自建服务器提示和通讯录的「我的地址簿」栏目；标签入口移动到搜索、刷新和多选操作区，默认使用一行多项的紧凑视图。
+- 通讯录设备卡片只显示备注名和客户端 ID，不再显示用户名、主机名或大写字母头像。
+- 终端应用默认允许复制到剪贴板。
 - standard 和 SOS 构建成功后会把八个 Release 安装包同步到阿里云 OSS，并只保留最近五个稳定版本。
 
 ## 在线版本检测与升级
@@ -59,7 +62,9 @@ Android arm64 使用 `android-aarch64-apk`。每个 target 还会带 `standard` 
 - Windows/macOS 已安装版本：按钮进入签名校验下载和安装事务。
 - Windows MSI：选择 MSI target，并走 MSI 更新流程。
 - Android：更新入口打开 manifest 返回的真实下载地址，不再固定跳转官方下载页。
-- 设置页：可以打开启动时检查更新和自动更新选项。
+- 设置「关于」页：显示服务端最新版本，提供手动检查更新、启动时检查软件更新和自动更新入口；后两个开关默认关闭。
+- 服务端可通过实时策略修改启动检查和自动更新开关，客户端无需重启即可在数秒内应用最新下发值。
+- rustdesk-api 设备列表提供「立即检查」和「立即更新」按钮；一次性命令通过设备签名认证的 SSE 通道投递，客户端校验锁定的版本、build、大小、SHA-256 和签名后执行并回报状态。
 
 更新事件包括 `started`、`downloaded`、`installing`、`installed`、`failed`、`deferred`、`rolled_back` 和 `rollback_failed`，用于更新 UI 和服务器事件记录。
 
@@ -127,14 +132,22 @@ rustdesk/stable/v1.5.0-build-YYYY.MM.DD-NN/
 - `/rd/update/v1/publish` 路由存在，未携带凭据时返回 `401`；
 - `/rd/update/v1/events` 路由存在，参数错误时返回 `422`。
 
-当前待完成项：
+本次发布结果：
 
 ```text
 GET https://rdapi.yan.life/rd/update/v1/manifest/stable.json
-当前返回 HTTP 404：更新清单不存在
+HTTP 200
+version: 1.5.0
+build_seq: 2026093006
+source_commit: 9f8b6d19d0171d1542cd30e4a76848137d5f23b5
+targets: 8
 ```
 
-这表示服务器配置和路由已经准备好，但新的 8 包发布 Action 尚未成功写入 stable manifest。构建、OSS 上传和 `/publish` 成功后，该请求必须变为 HTTP 200。
+GitHub Actions run `36782267617` 已完成 standard/SOS 的 Windows x86_64、Android arm64、macOS arm64 构建。OSS 发布 job `110137268795` 成功上传 8 个资产、发布 stable manifest，并完成发布后读取校验。
+
+8 个 OSS 主地址和 GitHub mirror 均已实测返回 HTTP 200；实际下载大小、SHA-256 和 `yan-release-2026` Ed25519 签名全部通过校验。对上一 build `2026093005` 调用 `/rd/update/v1/check` 时，8 个 target 均返回可更新到 `2026093006`；当前 build 返回无更新。
+
+服务器当前默认策略为 `mode=notify`、`auto_install=false`。因此启动检测和用户点击更新后的下载安装路径可用，但勾选客户端「Auto update」不会使默认设备在后台自动安装。需要后台静默自动安装时，必须给对应设备配置 `auto_install` 策略，并另做真机升级验收。
 
 ### 发布后验收
 
@@ -164,3 +177,9 @@ git diff --check：通过
 本机没有 Flutter/Dart SDK，因此 Flutter analyze、widget 测试和真实桌面启动冒烟需要在构建机或安装了 Flutter 的验收机执行。没有完成这些平台验收前，不能把在线升级链路标记为最终闭环。
 
 本文档的发布矩阵只覆盖本项目当前要求的 Windows x86_64、Android arm64 和 macOS arm64。Linux AppImage、macOS x86_64 和 iOS 不在本次 8 包 stable manifest 中，不能把它们当作已发布的自动安装 target。
+
+Android arm64 当前是检测更新后打开服务端返回的 APK 下载地址，不是应用内静默安装。Windows EXE/MSI 和 macOS DMG 已具备下载、校验、提权安装及回滚代码路径，但 run `36782267617` 只证明构建和发布成功；生产事件表尚无 build `2026093006` 的真实 `installed` 或回滚终态记录。需要用旧 build 客户端升级到 `2026093006`，或发布下一 build 后用 `2026093006` 升级，才能完成安装端到端验收。
+
+Windows standard MSI 真机 `83077683` 已上报为 `1.5.0 / 2026093006`、`x86_64`、`installed`，但此前最近设备报告仍为 `last_update_status=not_checked`，且没有升级事件。本版本已在设置的关于页增加「检查更新」按钮，并保留默认关闭的「启动时检查软件更新」和「自动更新」开关；服务端可通过实时策略修改两个开关。
+
+本版本把更新检查、策略流和事件上报的 `client_id` 统一修正为 `83077683`，UUID 继续使用设备真实 UUID。服务端继续为未升级客户端保留 `RustDesk Yan + 唯一 UUID` 的策略兼容映射；一次性检查和安装命令只向通过设备 Ed25519 签名认证的新客户端投递。后台强制安装会锁定已发布的目标版本和 build，客户端完成下载、大小、SHA-256、签名和安装校验后才上报终态；真机从旧 build 升级到更高 build 的完整安装与重启验收仍须在下一次发布后执行。
