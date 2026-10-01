@@ -31,7 +31,6 @@ jobs:
           digest = hashlib.sha256(path.read_bytes()).hexdigest()
           run_id = os.environ["RUN_ID"]
           cases = (
-              ("shanghai", "rustdesk-release", "oss-cn-shanghai.aliyuncs.com"),
               ("accelerate", "rustdesk-release", "oss-accelerate.aliyuncs.com"),
               ("hongkong", "rustdesk-client-release", "oss-cn-hongkong.aliyuncs.com"),
           )
