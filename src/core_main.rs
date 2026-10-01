@@ -31,8 +31,15 @@ macro_rules! my_println{
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 pub fn core_main() -> Option<Vec<String>> {
     #[cfg(target_os = "macos")]
-    if std::env::args().any(|arg| arg == "--check-macos-permissions") {
-        println!(
+    let permission_output_path = std::env::args().find_map(|arg| {
+        arg.strip_prefix("--macos-permission-output=")
+            .map(ToOwned::to_owned)
+    });
+    #[cfg(target_os = "macos")]
+    if permission_output_path.is_some()
+        || std::env::args().any(|arg| arg == "--check-macos-permissions")
+    {
+        let permission_output = format!(
             "screen_recording={} accessibility={} input_monitoring={}",
             crate::platform::macos::is_can_screen_recording(false),
             crate::platform::macos::is_process_trusted(false),
@@ -47,6 +54,12 @@ pub fn core_main() -> Option<Vec<String>> {
                 }
             }
         );
+        if let Some(permission_output_path) = permission_output_path {
+            if let Err(err) = std::fs::write(permission_output_path, &permission_output) {
+                eprintln!("Failed to write macOS permission status: {err}");
+            }
+        }
+        println!("{permission_output}");
         return None;
     }
     if !crate::common::global_init() {

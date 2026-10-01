@@ -5,6 +5,8 @@ app=${RUSTDESK_APP:-"/Applications/RustDesk Yan.app"}
 bundle_id=${RUSTDESK_BUNDLE_ID:-}
 executable=${RUSTDESK_EXECUTABLE:-}
 status_command=${RUSTDESK_PERMISSION_STATUS_COMMAND:-}
+open_command=${RUSTDESK_OPEN_COMMAND:-open}
+reset_permissions=${RUSTDESK_RESET_PERMISSIONS:-0}
 sleep_seconds=${RUSTDESK_PERMISSION_SLEEP_SECONDS:-1}
 timeout_seconds=${RUSTDESK_PERMISSION_TIMEOUT_SECONDS:-600}
 
@@ -40,16 +42,26 @@ stop_app() {
 
 start_app() {
     say "- 正在启动 RustDesk Yan..."
-    open -n "$app" --args --open-window
+    "$open_command" -n "$app" --args --open-window
     sleep "$sleep_seconds"
+}
+
+probe_permissions() {
+    permission_output_file=$(mktemp "${TMPDIR:-/tmp}/rustdesk-permissions.XXXXXX") || return 1
+    "$open_command" -n -W "$app" --args \
+        --check-macos-permissions \
+        "--macos-permission-output=$permission_output_file" \
+        >/dev/null 2>&1 || true
+    permission_output=$(cat "$permission_output_file" 2>/dev/null || true)
+    rm -f "$permission_output_file"
+    [ -n "$permission_output" ]
 }
 
 has_permission() {
     service=$1
     if [ -n "$status_command" ]; then
         "$status_command" "$service"
-    elif [ -x "$executable" ]; then
-        permission_output=$("$executable" --check-macos-permissions 2>/dev/null || true)
+    elif probe_permissions; then
         case "$service" in
             ScreenCapture) printf '%s\n' "$permission_output" | grep -q 'screen_recording=true' ;;
             Accessibility) printf '%s\n' "$permission_output" | grep -q 'accessibility=true' ;;
@@ -76,7 +88,7 @@ wait_for_permission() {
     say "请在打开的系统设置中启用 RustDesk Yan 的“${label}”。"
     say "如果列表中没有 RustDesk Yan，请点击左下角“+”，选择：${app}，然后打开右侧开关。"
     say "脚本正在自动检测，无需回到终端按键。"
-    open "$settings_url"
+    "$open_command" "$settings_url"
 
     elapsed=0
     while ! has_permission "$service"; do
@@ -106,7 +118,7 @@ fi
 [ -x "$executable" ] || fail "应用主程序不存在或不可执行：$executable"
 
 if [ -z "$status_command" ]; then
-    say "- 使用应用内 macOS 权限探针读取权限状态..."
+    say "- 通过 LaunchServices 使用 RustDesk Yan 身份检测权限..."
 fi
 
 say "RustDesk Yan macOS 权限修复"
@@ -125,11 +137,15 @@ say "- 校验应用签名..."
 codesign --verify --deep --strict "$app" >/dev/null 2>&1 || \
     fail "应用签名校验失败，请重新安装完整的 RustDesk Yan.app。"
 
-say "- 清除旧的权限记录..."
-for service in ScreenCapture Accessibility ListenEvent; do
-    tccutil reset "$service" "$bundle_id" >/dev/null || \
-        fail "无法重置 $service 权限。"
-done
+if [ "$reset_permissions" = "1" ]; then
+    say "- 按要求清除旧的权限记录..."
+    for service in ScreenCapture Accessibility ListenEvent; do
+        tccutil reset "$service" "$bundle_id" >/dev/null || \
+            fail "无法重置 $service 权限。"
+    done
+else
+    say "- 保留已有 macOS 权限记录，不执行 tccutil reset。"
+fi
 
 # RustDesk 必须先启动并调用相关系统 API，才会出现在隐私设置列表中。
 start_app

@@ -31,25 +31,33 @@ class MacosScreenPermissionTest(unittest.TestCase):
             self._write_command(bin_dir, "pkill", 'echo "pkill $*" >> "$TEST_LOG"')
             self._write_command(bin_dir, "pgrep", "exit 1")
             self._write_command(bin_dir, "codesign", 'echo "codesign $*" >> "$TEST_LOG"')
+            self._write_command(bin_dir, "sleep", ":")
             self._write_command(bin_dir, "uname", 'echo "Darwin"')
             self._write_command(
                 bin_dir,
                 "open",
                 'echo "open $*" >> "$TEST_LOG"\n'
                 'case "$*" in\n'
+                '  *--check-macos-permissions*)\n'
+                '    for arg in "$@"; do\n'
+                '      case "$arg" in\n'
+                '        --macos-permission-output=*) output=${arg#*=} ;;\n'
+                '      esac\n'
+                '    done\n'
+                '    screen_recording=false\n'
+                '    accessibility=false\n'
+                '    input_monitoring=false\n'
+                '    test -f "$TEST_STATE/ScreenCapture" && screen_recording=true\n'
+                '    test -f "$TEST_STATE/Accessibility" && accessibility=true\n'
+                '    test -f "$TEST_STATE/ListenEvent" && input_monitoring=true\n'
+                '    echo "screen_recording=$screen_recording accessibility=$accessibility input_monitoring=$input_monitoring" > "$output"\n'
+                '    ;;\n'
+                '  *"--args --open-window"*) : ;;\n'
                 '  *Privacy_ScreenCapture*) touch "$TEST_STATE/ScreenCapture" ;;\n'
                 '  *Privacy_Accessibility*) touch "$TEST_STATE/Accessibility" ;;\n'
                 '  *Privacy_ListenEvent*) touch "$TEST_STATE/ListenEvent" ;;\n'
                 'esac',
             )
-
-            status_command = root / "permission-status"
-            status_command.write_text(
-                "#!/bin/sh\n"
-                'test -f "$TEST_STATE/$1"\n',
-                encoding="utf-8",
-            )
-            status_command.chmod(0o755)
 
             env = os.environ.copy()
             env.update(
@@ -58,9 +66,10 @@ class MacosScreenPermissionTest(unittest.TestCase):
                     "RUSTDESK_APP": str(app),
                     "RUSTDESK_BUNDLE_ID": "com.example.rustdesk",
                     "RUSTDESK_EXECUTABLE": str(executable),
-                    "RUSTDESK_PERMISSION_STATUS_COMMAND": str(status_command),
+                    "RUSTDESK_OPEN_COMMAND": str(bin_dir / "open"),
                     "RUSTDESK_PERMISSION_NO_COLOR": "1",
-                    "RUSTDESK_PERMISSION_SLEEP_SECONDS": "0",
+                    "RUSTDESK_PERMISSION_SLEEP_SECONDS": "1",
+                    "RUSTDESK_PERMISSION_TIMEOUT_SECONDS": "5",
                     "TEST_LOG": str(log),
                     "TEST_STATE": str(state),
                 }
@@ -86,13 +95,36 @@ class MacosScreenPermissionTest(unittest.TestCase):
 
             commands = log.read_text(encoding="utf-8")
             self.assertIn(f"xattr -cr {app}", commands)
-            self.assertIn("tccutil reset ScreenCapture com.example.rustdesk", commands)
-            self.assertIn("tccutil reset Accessibility com.example.rustdesk", commands)
-            self.assertIn("tccutil reset ListenEvent com.example.rustdesk", commands)
+            self.assertNotIn("tccutil reset", commands)
             self.assertIn(f"open -n {app} --args --open-window", commands)
+            self.assertIn(
+                f"open -n -W {app} --args --check-macos-permissions",
+                commands,
+            )
             self.assertGreaterEqual(commands.count("osascript "), 2)
             self.assertEqual(commands.count("pkill -x RustDesk Yan"), 2)
             self.assertEqual(commands.count(f"open -n {app} --args --open-window"), 2)
+
+            reset_env = env.copy()
+            reset_env["RUSTDESK_RESET_PERMISSIONS"] = "1"
+            reset_result = subprocess.run(
+                ["/bin/sh", str(SCRIPT)],
+                text=True,
+                capture_output=True,
+                encoding="utf-8",
+                errors="replace",
+                env=reset_env,
+                timeout=10,
+            )
+            self.assertEqual(
+                reset_result.returncode,
+                0,
+                reset_result.stdout + reset_result.stderr,
+            )
+            reset_commands = log.read_text(encoding="utf-8")
+            self.assertIn("tccutil reset ScreenCapture com.example.rustdesk", reset_commands)
+            self.assertIn("tccutil reset Accessibility com.example.rustdesk", reset_commands)
+            self.assertIn("tccutil reset ListenEvent com.example.rustdesk", reset_commands)
 
     @staticmethod
     def _write_command(bin_dir: Path, name: str, body: str) -> None:
