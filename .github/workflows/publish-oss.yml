@@ -34,7 +34,7 @@ jobs:
     runs-on: ubuntu-latest
     env:
       OSS_BUCKET: rustdesk-release
-      OSS_ENDPOINT: oss-accelerate.aliyuncs.com
+      OSS_ENDPOINT: oss-cn-shanghai.aliyuncs.com
       OSS_PREFIX: rustdesk/stable
       RELEASE_TAG: ${{ inputs.tag }}
       DOWNLOAD_BASE: https://download.yan.life
