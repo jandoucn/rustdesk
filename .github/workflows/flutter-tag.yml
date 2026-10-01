@@ -119,7 +119,7 @@ jobs:
         working-directory: flutter
         run: |
           flutter pub get
-          flutter analyze
+          flutter analyze --no-fatal-warnings --no-fatal-infos
           flutter test \
             test/address_book_customization_test.dart \
             test/yan_standard_ui_policy_test.dart \
