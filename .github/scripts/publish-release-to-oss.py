@@ -15,6 +15,7 @@ from pathlib import Path
 
 
 SIGNATURE_KEY_ID = "yan-release-2026"
+OSS_CONNECT_TIMEOUT_SECONDS = 60
 RELEASE_TAG_PATTERN = re.compile(
     r"^v(?P<version>\d+\.\d+\.\d+)-build-(?P<date>\d{4}\.\d{2}\.\d{2})-(?P<sequence>\d{2})$"
 )
@@ -351,7 +352,12 @@ def main():
     validate_release_identity(metadata, args.tag)
     resolved = resolve_release_assets(args.assets_dir, metadata["version"])
     auth = oss2.Auth(key_id, key_secret)
-    bucket = oss2.Bucket(auth, f"https://{args.endpoint}", args.bucket)
+    bucket = oss2.Bucket(
+        auth,
+        f"https://{args.endpoint}",
+        args.bucket,
+        connect_timeout=OSS_CONNECT_TIMEOUT_SECONDS,
+    )
     release_prefix = f"{args.prefix}/{args.tag}/"
 
     def upload_asset(item):
@@ -360,7 +366,12 @@ def main():
         size = path.stat().st_size
         sha256 = hashlib.sha256(data).hexdigest()
         object_key = release_prefix + path.name
-        upload_bucket = oss2.Bucket(auth, f"https://{args.endpoint}", args.bucket)
+        upload_bucket = oss2.Bucket(
+            auth,
+            f"https://{args.endpoint}",
+            args.bucket,
+            connect_timeout=OSS_CONNECT_TIMEOUT_SECONDS,
+        )
         oss2.resumable_upload(
             upload_bucket,
             object_key,
