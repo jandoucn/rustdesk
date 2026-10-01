@@ -58,6 +58,8 @@ enum UpdateMsg {
 
 lazy_static::lazy_static! {
     static ref TX_MSG : Mutex<Sender<UpdateMsg>> = Mutex::new(start_auto_update_check());
+    #[cfg(target_os = "macos")]
+    static ref MAC_SCHEDULER_WAKE: Mutex<Option<Sender<()>>> = Mutex::new(None);
 }
 
 static CONTROLLING_SESSION_COUNT: AtomicUsize = AtomicUsize::new(0);
@@ -134,6 +136,10 @@ pub fn start_auto_update() {
 pub fn update_schedule_changed() {
     let sender = TX_MSG.lock().unwrap();
     let _ = sender.send(UpdateMsg::ScheduleChanged);
+    #[cfg(target_os = "macos")]
+    if let Some(sender) = MAC_SCHEDULER_WAKE.lock().unwrap().as_ref() {
+        let _ = sender.send(());
+    }
 }
 
 pub fn start_update_policy_stream() {
@@ -1025,14 +1031,21 @@ fn startup_update_enabled() -> bool {
 }
 
 fn scheduled_update_interval() -> Option<Duration> {
-    if !should_run_scheduled_update(update_option_enabled(&config::Config::get_option(
-        keys::OPTION_ENABLE_SCHEDULED_UPDATE,
-    ))) {
-        return None;
-    }
     let hours = config::Config::get_option(keys::OPTION_SCHEDULED_UPDATE_INTERVAL_HOURS)
         .parse()
         .unwrap_or(DEFAULT_SCHEDULED_UPDATE_INTERVAL_HOURS);
+    scheduled_update_delay(
+        update_option_enabled(&config::Config::get_option(
+            keys::OPTION_ENABLE_SCHEDULED_UPDATE,
+        )),
+        hours,
+    )
+}
+
+fn scheduled_update_delay(enabled: bool, hours: u64) -> Option<Duration> {
+    if !should_run_scheduled_update(enabled) {
+        return None;
+    }
     Some(Duration::from_secs(
         normalize_scheduled_update_interval_hours(hours) * 60 * 60,
     ))
@@ -1993,9 +2006,11 @@ fn wait_for_failed_update_retry() {
 #[cfg(target_os = "macos")]
 pub fn start_auto_update_macos() {
     start_update_policy_stream();
+    let (schedule_tx, schedule_rx) = channel();
+    *MAC_SCHEDULER_WAKE.lock().unwrap() = Some(schedule_tx);
     let spawn_result = std::thread::Builder::new()
         .name("rustdesk-auto-update".to_owned())
-        .spawn(|| {
+        .spawn(move || {
             log::info!("[root-update] Auto-update scheduler thread started.");
             consume_mac_update_result();
             std::thread::sleep(INITIAL_CHECK_DELAY);
@@ -2005,7 +2020,7 @@ pub fn start_auto_update_macos() {
                 let no_active_conns = has_no_active_conns_ipc();
                 let interval = if !no_active_conns {
                     log::info!("[root-update] Active session in progress, retrying in 10 min.");
-                    MIN_INTERVAL
+                    Some(MIN_INTERVAL)
                 } else {
                     match check_update_as_root() {
                         Ok(update_started) => {
@@ -2013,22 +2028,32 @@ pub fn start_auto_update_macos() {
                                 // The replacement script is detached and may fail
                                 // after this process returns. Always retry at the
                                 // failure interval until the new daemon replaces us.
-                                RETRY_INTERVAL
+                                Some(RETRY_INTERVAL)
                             } else {
-                                DUR_ONE_DAY
+                                scheduled_update_interval()
                             }
                         }
                         Err(e) => {
                             log::error!("[root-update] Update check failed: {}", e);
-                            RETRY_INTERVAL
+                            Some(RETRY_INTERVAL)
                         }
                     }
                 };
-                std::thread::sleep(interval);
+                if wait_for_mac_schedule_change(&schedule_rx, interval) {
+                    log::info!("[root-update] Update policy changed; recalculating schedule.");
+                }
             }
         });
     if let Err(err) = spawn_result {
         log::error!("[root-update] Failed to start scheduler thread: {}", err);
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn wait_for_mac_schedule_change(rx: &Receiver<()>, interval: Option<Duration>) -> bool {
+    match interval {
+        Some(interval) => rx.recv_timeout(interval).is_ok(),
+        None => rx.recv().is_ok(),
     }
 }
 
@@ -2347,5 +2372,41 @@ mod tests {
         assert!(
             verify_detached_signature(data, signature.as_ref(), other_public_key.as_ref()).is_err()
         );
+    }
+
+    #[test]
+    fn scheduled_update_delay_honors_policy_and_bounds() {
+        assert_eq!(scheduled_update_delay(false, 5), None);
+        assert_eq!(
+            scheduled_update_delay(true, 1),
+            Some(Duration::from_secs(60 * 60))
+        );
+        assert_eq!(
+            scheduled_update_delay(true, 5),
+            Some(Duration::from_secs(5 * 60 * 60))
+        );
+        assert_eq!(
+            scheduled_update_delay(true, 168),
+            Some(Duration::from_secs(168 * 60 * 60))
+        );
+        assert_eq!(
+            scheduled_update_delay(true, 0),
+            Some(Duration::from_secs(60 * 60))
+        );
+        assert_eq!(
+            scheduled_update_delay(true, 999),
+            Some(Duration::from_secs(168 * 60 * 60))
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn mac_scheduler_wakes_when_policy_changes() {
+        let (tx, rx) = std::sync::mpsc::channel();
+        tx.send(()).expect("policy wake should be delivered");
+        assert!(wait_for_mac_schedule_change(
+            &rx,
+            Some(Duration::from_secs(60 * 60))
+        ));
     }
 }

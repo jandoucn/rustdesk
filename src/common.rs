@@ -1054,6 +1054,7 @@ fn add_runtime_inventory_fields(out: &mut serde_json::Value) {
     .parse::<u64>()
     .map(base::update::normalize_scheduled_update_interval_hours)
     .unwrap_or(base::update::DEFAULT_SCHEDULED_UPDATE_INTERVAL_HOURS));
+    out["update_policy_revision"] = json!(update_policy_revision());
     let (last_update_status, last_update_source) = SOFTWARE_UPDATE_RESPONSE
         .lock()
         .unwrap()
@@ -1114,6 +1115,14 @@ fn add_runtime_inventory_fields(out: &mut serde_json::Value) {
             .collect::<Vec<_>>();
         out["network"] = json!({"private_ips": private_ips});
     }
+}
+
+fn update_policy_revision() -> u64 {
+    parse_update_policy_revision(&Config::get_option(keys::OPTION_UPDATE_POLICY_REVISION))
+}
+
+fn parse_update_policy_revision(value: &str) -> u64 {
+    value.parse::<u64>().unwrap_or_default()
 }
 
 fn is_private_inventory_ip(value: &str) -> bool {
@@ -4269,10 +4278,18 @@ mod tests {
         assert!(payload["allow_auto_update"].is_boolean());
         assert!(payload["enable_scheduled_update"].is_boolean());
         assert!(payload["scheduled_update_interval_hours"].is_u64());
+        assert!(payload["update_policy_revision"].is_u64());
         assert_eq!(payload["schema_version"], 1);
         assert!(payload["capabilities"].is_array());
         assert!(payload["extensions"].is_object());
         assert_eq!(payload["hostname"], "test");
+    }
+
+    #[test]
+    fn update_policy_revision_defaults_to_zero_for_missing_or_invalid_values() {
+        assert_eq!(parse_update_policy_revision(""), 0);
+        assert_eq!(parse_update_policy_revision("not-a-revision"), 0);
+        assert_eq!(parse_update_policy_revision("7"), 7);
     }
 
     #[test]
