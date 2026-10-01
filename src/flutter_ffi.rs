@@ -1068,6 +1068,7 @@ pub fn main_set_option(key: String, value: String) {
         config::Status::set("sysinfo_hash", String::new());
     }
     if is_update_schedule_option {
+        #[cfg(not(any(target_os = "android", target_os = "ios")))]
         crate::updater::update_schedule_changed();
         config::Status::set("sysinfo_hash", String::new());
     }
