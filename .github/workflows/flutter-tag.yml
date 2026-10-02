@@ -91,6 +91,18 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: 校验 Android 发布签名
+        env:
+          PLATFORMS: ${{ inputs.platforms }}
+          ANDROID_SIGNING_KEY: ${{ secrets.ANDROID_SIGNING_KEY }}
+        run: |
+          set -euo pipefail
+          if { [ "$PLATFORMS" = "all" ] || [[ ",$PLATFORMS," == *,android,* ]]; } && \
+             [ -z "$ANDROID_SIGNING_KEY" ]; then
+            echo "Android 发布必须配置长期签名证书" >&2
+            exit 1
+          fi
+
       - name: Install Flutter
         uses: subosito/flutter-action@2783a3f08e1baf891508463f8c6653c258246225 # v2.12.0
         with:

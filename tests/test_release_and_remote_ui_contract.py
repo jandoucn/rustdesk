@@ -113,6 +113,8 @@ class ReleaseAndRemoteUiContractTest(unittest.TestCase):
         self.assertIn("group: flutter-tag-release", caller)
         self.assertIn("cancel-in-progress: false", caller)
         self.assertIn("if: inputs.standard && inputs.sos", caller)
+        self.assertIn("校验 Android 发布签名", caller)
+        self.assertIn("Android 发布必须配置长期签名证书", caller)
         self.assertNotIn("inputs.platforms == 'all'", caller[caller.index("publish-oss:") :])
         self.assertIn("publish-release:", caller)
         self.assertIn("preflight:", caller)
