@@ -17,10 +17,16 @@ TARGET_SUFFIXES = {
     "macos-aarch64-dmg": ("macos-aarch64.dmg", "aarch64.dmg"),
     "android-aarch64-apk": ("android-aarch64-signed.apk", "android-aarch64.apk"),
 }
+TARGET_EDITIONS = {
+    "windows-x86_64-exe": ("standard", "sos"),
+    "windows-x86_64-msi": ("standard", "sos"),
+    "macos-aarch64-dmg": ("standard", "sos"),
+    "android-aarch64-apk": ("standard",),
+}
 EXPECTED_TARGETS = {
     f"{base_key}-{edition}"
-    for edition in ("standard", "sos")
-    for base_key in TARGET_SUFFIXES
+    for base_key, editions in TARGET_EDITIONS.items()
+    for edition in editions
 }
 CANONICAL_SUFFIXES = {
     "windows-x86_64-exe": "windows-x86_64.exe",
@@ -35,11 +41,11 @@ class SnapshotError(RuntimeError):
 
 
 def target_key_for_name(name):
-    for edition in ("standard", "sos"):
-        marker = f"-{edition}-"
-        if marker not in name:
-            continue
-        for base_key, suffixes in TARGET_SUFFIXES.items():
+    for base_key, suffixes in TARGET_SUFFIXES.items():
+        for edition in TARGET_EDITIONS[base_key]:
+            marker = f"-{edition}-"
+            if marker not in name:
+                continue
             if any(name.endswith(f"-{suffix}") for suffix in suffixes):
                 return f"{base_key}-{edition}"
     return None
@@ -88,17 +94,16 @@ def asset_name_from_target(target):
 
 
 def canonical_asset_name(target_key, release):
-    for edition in ("standard", "sos"):
-        suffix = f"-{edition}"
-        if not target_key.endswith(suffix):
-            continue
-        base_key = target_key[: -len(suffix)]
-        package_suffix = CANONICAL_SUFFIXES.get(base_key)
-        if package_suffix:
-            return (
-                f"rustdesk-{release['version']}-{release['build_seq']}-"
-                f"{edition}-{package_suffix}"
-            )
+    for base_key, editions in TARGET_EDITIONS.items():
+        for edition in editions:
+            if target_key != f"{base_key}-{edition}":
+                continue
+            package_suffix = CANONICAL_SUFFIXES.get(base_key)
+            if package_suffix:
+                return (
+                    f"rustdesk-{release['version']}-{release['build_seq']}-"
+                    f"{edition}-{package_suffix}"
+                )
     raise SnapshotError(f"unsupported target key: {target_key}")
 
 

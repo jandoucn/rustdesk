@@ -86,8 +86,11 @@ class PublishReleaseToOssTest(unittest.TestCase):
                 "windows-x86_64.exe",
                 "windows-x86_64.msi",
                 "macos-aarch64.dmg" if signed else "aarch64.dmg",
-                "android-aarch64-signed.apk" if signed else "android-aarch64.apk",
             ]
+            if edition == "standard":
+                suffixes.append(
+                    "android-aarch64-signed.apk" if signed else "android-aarch64.apk"
+                )
             for suffix in suffixes:
                 name = f"rustdesk-1.5.0-{edition}-{suffix}"
                 (directory / name).write_bytes(name.encode())
@@ -102,7 +105,7 @@ class PublishReleaseToOssTest(unittest.TestCase):
 
                 resolved = self.publisher.resolve_release_assets(directory, "1.5.0")
 
-                self.assertEqual(len(resolved), 8)
+                self.assertEqual(len(resolved), 7)
                 self.assertEqual({path.name for path in resolved.values()}, set(names))
                 self.assertEqual(
                     resolved["macos-aarch64-dmg-standard"].name,
@@ -111,11 +114,12 @@ class PublishReleaseToOssTest(unittest.TestCase):
                     else "rustdesk-1.5.0-standard-aarch64.dmg",
                 )
                 self.assertEqual(
-                    resolved["android-aarch64-apk-sos"].name,
-                    "rustdesk-1.5.0-sos-android-aarch64-signed.apk"
+                    resolved["android-aarch64-apk-standard"].name,
+                    "rustdesk-1.5.0-standard-android-aarch64-signed.apk"
                     if signed
-                    else "rustdesk-1.5.0-sos-android-aarch64.apk",
+                    else "rustdesk-1.5.0-standard-android-aarch64.apk",
                 )
+                self.assertNotIn("android-aarch64-apk-sos", resolved)
 
     def test_signature_payload_matches_client_envelope(self):
         metadata = {
@@ -165,7 +169,7 @@ class PublishReleaseToOssTest(unittest.TestCase):
 
             (directory / names[0]).write_bytes(b"restored")
             (directory / "unexpected.txt").write_text("unexpected")
-            with self.assertRaisesRegex(self.publisher.PublishError, "exactly 8"):
+            with self.assertRaisesRegex(self.publisher.PublishError, "exactly 7"):
                 self.publisher.resolve_release_assets(directory, "1.5.0")
 
     def test_sha256_manifest_is_metadata_not_an_install_asset(self):
@@ -176,7 +180,7 @@ class PublishReleaseToOssTest(unittest.TestCase):
 
             resolved = self.publisher.resolve_release_assets(directory, "1.5.0")
 
-            self.assertEqual(len(resolved), 8)
+            self.assertEqual(len(resolved), 7)
 
     def test_upload_concurrency_is_capped_at_four_total_transfers(self):
         source = inspect.getsource(self.publisher)
@@ -273,7 +277,7 @@ class PublishReleaseToOssTest(unittest.TestCase):
                 "sha256": f"{index:064x}",
                 "signature": "signature",
             }
-            for index in range(8)
+            for index in range(len(self.publisher.EXPECTED_TARGETS))
         ]
         body = json.dumps(
             {
@@ -323,11 +327,7 @@ class PublishReleaseToOssTest(unittest.TestCase):
         self.assertEqual(bucket.deleted, [])
 
     def test_complete_release_hash_mismatch_fails_before_any_upload(self):
-        target_keys = [
-            f"{base}-{edition}"
-            for edition in ("standard", "sos")
-            for base in self.publisher.TARGET_SUFFIXES
-        ]
+        target_keys = sorted(self.publisher.EXPECTED_TARGETS)
         upload_calls = []
         with tempfile.TemporaryDirectory() as tmp:
             directory = Path(tmp)
@@ -377,11 +377,7 @@ class PublishReleaseToOssTest(unittest.TestCase):
         self.assertEqual(upload_calls, [])
 
     def test_matching_complete_release_is_reused_without_upload(self):
-        target_keys = [
-            f"{base}-{edition}"
-            for edition in ("standard", "sos")
-            for base in self.publisher.TARGET_SUFFIXES
-        ]
+        target_keys = sorted(self.publisher.EXPECTED_TARGETS)
         upload_calls = []
         with tempfile.TemporaryDirectory() as tmp:
             directory = Path(tmp)
@@ -430,11 +426,7 @@ class PublishReleaseToOssTest(unittest.TestCase):
         self.assertEqual(upload_calls, [])
 
     def test_complete_release_identity_or_signature_mismatch_fails_before_upload(self):
-        target_keys = [
-            f"{base}-{edition}"
-            for edition in ("standard", "sos")
-            for base in self.publisher.TARGET_SUFFIXES
-        ]
+        target_keys = sorted(self.publisher.EXPECTED_TARGETS)
         expected_release = {
             "version": "1.5.0",
             "build_number": "20260930.5",
@@ -789,7 +781,7 @@ class PublishReleaseToOssTest(unittest.TestCase):
                     "sha256": f"{index:064x}",
                     "signature": "signature",
                 }
-                for index in range(8)
+                for index in range(len(self.publisher.EXPECTED_TARGETS))
             ]
             catalogs[catalog_key] = json.dumps({
                 "schema": 1,
@@ -829,7 +821,10 @@ class PublishReleaseToOssTest(unittest.TestCase):
         expected_deleted = {
             f"{prefix}/v1.5.0-build-2026.09.{number + 20:02d}-01/{name}"
             for number in (1, 2)
-            for name in ("catalog.json", *(f"asset-{index}" for index in range(8)))
+            for name in (
+                "catalog.json",
+                *(f"asset-{index}" for index in range(len(self.publisher.EXPECTED_TARGETS))),
+            )
         }
         self.assertEqual(set(bucket.deleted), expected_deleted)
         self.assertNotIn(f"{prefix}/{invalid_tag}/partial.bin", bucket.deleted)
@@ -876,7 +871,7 @@ class PublishReleaseToOssTest(unittest.TestCase):
                 "sha256": f"{index:064x}",
                 "signature": "signature",
             }
-            for index in range(8)
+            for index in range(len(self.publisher.EXPECTED_TARGETS))
         ]
         body = json.dumps({
             "schema": 1,
@@ -914,7 +909,7 @@ class PublishReleaseToOssTest(unittest.TestCase):
                 "sha256": f"{index:064x}",
                 "signature": "signature",
             }
-            for index in range(8)
+            for index in range(len(self.publisher.EXPECTED_TARGETS))
         ]
         body = json.dumps({"schema": 1, "tag": tag, "published_at": 1, "assets": assets}).encode()
         keys = [catalog_key, *(asset["key"] for asset in assets)]
@@ -949,7 +944,7 @@ class PublishReleaseToOssTest(unittest.TestCase):
                     "sha256": f"{index:064x}",
                     "signature": "signature",
                 }
-                for index in range(8)
+                for index in range(len(self.publisher.EXPECTED_TARGETS))
             ]
             body = json.dumps(
                 {"schema": 1, "tag": tag, "published_at": published_at, "assets": assets}

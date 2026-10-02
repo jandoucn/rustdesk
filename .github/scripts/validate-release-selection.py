@@ -22,9 +22,12 @@ def parse_platforms(value):
 
 
 def validate_selection(platforms, standard, sos):
-    if not standard or not sos:
-        raise ValueError("完整发布快照必须同时构建 standard 和 SOS")
-    return parse_platforms(platforms)
+    selected = parse_platforms(platforms)
+    if not standard:
+        raise ValueError("Android 发布必须构建 standard")
+    if any(platform != "android" for platform in selected) and not sos:
+        raise ValueError("桌面发布快照必须同时构建 standard 和 SOS")
+    return selected
 
 
 def main():

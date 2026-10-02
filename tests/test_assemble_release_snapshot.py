@@ -62,21 +62,21 @@ class AssembleReleaseSnapshotTest(unittest.TestCase):
             "macos": ("macos-aarch64.dmg",),
             "android": ("android-aarch64.apk",),
         }
-        for edition in ("standard", "sos"):
-            for platform in platforms:
+        for platform in platforms:
+            editions = ("standard",) if platform == "android" else ("standard", "sos")
+            for edition in editions:
                 for suffix in suffixes[platform]:
                     name = f"rustdesk-{version}-{build_seq}-{edition}-{suffix}"
                     (directory / name).write_bytes(name.encode())
 
-    def test_android_only_inherits_six_targets_and_keeps_origin_metadata(self):
+    def test_android_only_builds_one_target_and_inherits_six(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             current = root / "current"
             output = root / "output"
             current.mkdir()
-            for edition in ("standard", "sos"):
-                name = f"rustdesk-1.5.0-{edition}-android-aarch64-signed.apk"
-                (current / name).write_bytes(name.encode())
+            name = "rustdesk-1.5.0-standard-android-aarch64-signed.apk"
+            (current / name).write_bytes(name.encode())
             previous = self.previous_manifest()
             fetched = []
 
@@ -93,9 +93,15 @@ class AssembleReleaseSnapshotTest(unittest.TestCase):
                 )[2],
             )
 
-            self.assertEqual(len(snapshot["targets"]), 8)
-            self.assertEqual(len(list(output.glob("rustdesk-*"))), 8)
+            self.assertEqual(len(snapshot["targets"]), 7)
+            self.assertEqual(len(list(output.glob("rustdesk-*"))), 7)
             self.assertEqual(len(fetched), 6)
+            self.assertNotIn("android-aarch64-apk-sos", snapshot["targets"])
+            self.assertIsNone(
+                self.assembler.target_key_for_name(
+                    "rustdesk-1.5.0-sos-android-aarch64-signed.apk"
+                )
+            )
             self.assertEqual(
                 snapshot["targets"]["windows-x86_64-exe-standard"]["build_seq"],
                 2026100107,
@@ -120,31 +126,35 @@ class AssembleReleaseSnapshotTest(unittest.TestCase):
                 snapshot["targets"]["windows-x86_64-exe-standard"]["copy_source_verified"]
             )
 
-    def test_selected_platform_must_not_silently_inherit_missing_current_asset(self):
+    def test_android_only_does_not_require_a_current_sos_asset(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             current = root / "current"
             current.mkdir()
             (current / "rustdesk-1.5.0-standard-android-aarch64-signed.apk").write_bytes(b"one")
 
-            with self.assertRaisesRegex(self.assembler.SnapshotError, "selected target"):
-                self.assembler.assemble_snapshot(
-                    current,
-                    root / "output",
-                    self.metadata("new", 2026100201),
-                    "new",
-                    self.previous_manifest(),
-                    lambda target, path: path.write_bytes(b"old"),
-                )
+            snapshot = self.assembler.assemble_snapshot(
+                current,
+                root / "output",
+                self.metadata("new", 2026100201),
+                "new",
+                self.previous_manifest(),
+                lambda target, path: (
+                    path.write_bytes(b"old"),
+                    target["primary"],
+                )[1],
+            )
+
+            self.assertTrue(snapshot["targets"]["android-aarch64-apk-standard"]["current"])
+            self.assertNotIn("android-aarch64-apk-sos", snapshot["targets"])
 
     def test_inherited_target_hash_and_size_must_match_previous_manifest(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             current = root / "current"
             current.mkdir()
-            for edition in ("standard", "sos"):
-                name = f"rustdesk-1.5.1-2026100201-{edition}-android-aarch64.apk"
-                (current / name).write_bytes(b"new")
+            name = "rustdesk-1.5.1-2026100201-standard-android-aarch64.apk"
+            (current / name).write_bytes(b"new")
 
             with self.assertRaisesRegex(
                 self.assembler.SnapshotError, "inherited target (size|SHA-256) mismatch"
@@ -234,13 +244,10 @@ class AssembleReleaseSnapshotTest(unittest.TestCase):
             self.assertEqual(len(current_targets), 6)
             self.assertEqual(
                 inherited_targets,
-                {
-                    "android-aarch64-apk-standard",
-                    "android-aarch64-apk-sos",
-                },
+                {"android-aarch64-apk-standard"},
             )
 
-    def test_all_platform_build_uses_eight_current_targets_without_previous_manifest(self):
+    def test_all_platform_build_uses_seven_current_targets_without_android_sos(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             current = root / "current"
@@ -256,8 +263,12 @@ class AssembleReleaseSnapshotTest(unittest.TestCase):
                 lambda target, path: self.fail("all build must not fetch inherited assets"),
             )
 
-            self.assertEqual(len(snapshot["targets"]), 8)
-            self.assertTrue(all(target["current"] for target in snapshot["targets"].values()))
+            self.assertEqual(len(snapshot["targets"]), 7)
+            self.assertEqual(
+                {key for key, target in snapshot["targets"].items() if target["current"]},
+                self.assembler.EXPECTED_TARGETS,
+            )
+            self.assertNotIn("android-aarch64-apk-sos", snapshot["targets"])
 
 
 if __name__ == "__main__":

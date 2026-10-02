@@ -16,7 +16,7 @@ def load_script(name, path):
 
 
 class PartialReleaseE2ETest(unittest.TestCase):
-    def test_android_only_produces_complete_release_and_two_uploads_six_copies(self):
+    def test_android_only_produces_complete_release_and_one_upload_six_copies(self):
         assembler = load_script(
             "assemble_release_snapshot_e2e",
             ROOT / ".github/scripts/assemble-release-snapshot.py",
@@ -59,10 +59,9 @@ class PartialReleaseE2ETest(unittest.TestCase):
             current = root / "current"
             output = root / "release"
             current.mkdir()
-            for edition in ("standard", "sos"):
-                (current / f"rustdesk-1.5.1-2026100201-{edition}-android-aarch64-signed.apk").write_bytes(
-                    f"new-{edition}".encode()
-                )
+            (current / "rustdesk-1.5.1-2026100201-standard-android-aarch64-signed.apk").write_bytes(
+                b"new-standard"
+            )
             metadata = {
                 "version": "1.5.1",
                 "build_number": "20261002.1",
@@ -102,10 +101,11 @@ class PartialReleaseE2ETest(unittest.TestCase):
                 "rustdesk/stable/new/",
             )
 
-            self.assertEqual(len(snapshot["targets"]), 8)
-            self.assertEqual(len(list(output.glob("rustdesk-*"))), 8)
-            self.assertEqual(sum(op[0] == "upload" for op in operations), 2)
+            self.assertEqual(len(snapshot["targets"]), 7)
+            self.assertEqual(len(list(output.glob("rustdesk-*"))), 7)
+            self.assertEqual(sum(op[0] == "upload" for op in operations), 1)
             self.assertEqual(sum(op[0] == "copy" for op in operations), 6)
+            self.assertNotIn("android-aarch64-apk-sos", snapshot["targets"])
             self.assertEqual(
                 snapshot["targets"]["android-aarch64-apk-standard"]["build_seq"],
                 2026100201,

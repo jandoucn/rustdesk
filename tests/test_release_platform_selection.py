@@ -33,13 +33,18 @@ class ReleasePlatformSelectionTest(unittest.TestCase):
             with self.subTest(value=value), self.assertRaises(ValueError):
                 validator.parse_platforms(value)
 
-    def test_complete_snapshot_requires_both_editions(self):
+    def test_android_only_requires_standard_but_not_sos(self):
         validator = load_validator()
         validator.validate_selection("android", True, True)
-        with self.assertRaisesRegex(ValueError, "standard.*SOS"):
-            validator.validate_selection("android", True, False)
-        with self.assertRaisesRegex(ValueError, "standard.*SOS"):
+        validator.validate_selection("android", True, False)
+        with self.assertRaisesRegex(ValueError, "standard"):
             validator.validate_selection("android", False, True)
+
+    def test_desktop_targets_still_require_both_editions(self):
+        validator = load_validator()
+        validator.validate_selection("windows,android", True, True)
+        with self.assertRaisesRegex(ValueError, "standard.*SOS"):
+            validator.validate_selection("windows", True, False)
 
 
 if __name__ == "__main__":

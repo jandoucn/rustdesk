@@ -18,6 +18,7 @@
 * 不要改这些固定配置：固定密码 `asd123asd`，ID 服务器 `rd.yan.life`，API `https://rdapi.yan.life`，公钥 `WAVL+YUYZ6EXOqLCGZEq56VD2LalZc121gtVeXxpp78=`。standard 和 SOS 都同时启用固定密码和一次性密码，并默认打开全部远程权限。
 * OSS 发布采用分离链路：GitHub Actions 上传必须使用 `oss-accelerate.aliyuncs.com`；客户端 `DOWNLOAD_BASE` 固定为 `https://download.yan.life`，其 CNAME 指向 `rustdesk-release.oss-cn-shanghai.aliyuncs.com`，不要因上传加速而改动客户端下载域名。
 * Android 发布必须始终使用固定长期签名证书。证书 SHA-256 指纹为 `71:11:D7:30:EC:A2:C7:98:47:41:53:04:59:DD:38:97:20:16:2F:7B:FE:B7:39:FA:96:8F:2E:D7:4E:6F:0B:D8`，GitHub Actions 使用 `ANDROID_SIGNING_KEY`、`ANDROID_ALIAS`、`ANDROID_KEY_STORE_PASSWORD`、`ANDROID_KEY_PASSWORD`。缺少任一签名配置时必须终止 Android 发布，禁止把 debug 或 unsigned APK 上传到 Release 或 OSS。不得更换证书；确需更换时必须先得到明确确认并制定已安装客户端迁移方案。
+* Android 永久只发布 standard APK，不存在 Android SOS 发布目标。Android 必须安装后使用；禁止构建、上传、写入 Release/OSS manifest 或恢复 `android-aarch64-apk-sos`。Windows 和 macOS 的 SOS 发布保持不变。
 * macOS 包签名必须保持成功构建 run `36898758124` 和 `36859858472` 使用的既有方法，不得借构建修复重构或替换签名链：
   * 无证书构建依次执行 `codesign --force --sign - "$app/Contents/MacOS/service"`、`codesign --force --sign - "$app"`、`codesign --verify --deep --strict --verbose=2 "$app"`，不得启用 hardened runtime；
   * 正式证书构建继续使用 `.github/scripts/sign-macos-app.sh` 原有 `sign_args`，仅真实 identity 添加 `--options runtime --timestamp`，保持现有 entitlements、DMG 签名和公证流程；

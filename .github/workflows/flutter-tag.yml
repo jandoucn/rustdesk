@@ -8,7 +8,7 @@ on:
         type: boolean
         default: true
       sos:
-        description: 构建 SOS 版
+        description: 构建 Windows/macOS SOS 版（Android 永久忽略）
         type: boolean
         default: true
       platforms:
@@ -155,7 +155,11 @@ jobs:
     strategy:
       fail-fast: true
       matrix:
-        edition: ${{ fromJson(format('[{0}{1}{2}]', inputs.standard && '"standard"' || '', inputs.standard && inputs.sos && ',' || '', inputs.sos && '"sos"' || '')) }}
+        edition: >-
+          ${{ fromJson(format('[{0}{1}{2}]',
+          inputs.standard && '"standard"' || '',
+          inputs.standard && inputs.sos && inputs.platforms != 'android' && ',' || '',
+          inputs.sos && inputs.platforms != 'android' && '"sos"' || '')) }}
     uses: ./.github/workflows/flutter-build.yml
     secrets: inherit
     with:
@@ -243,7 +247,7 @@ jobs:
 
   publish-oss:
     needs: [release-tag, publish-release]
-    if: inputs.standard && inputs.sos
+    if: inputs.standard && (inputs.sos || inputs.platforms == 'android')
     uses: ./.github/workflows/publish-oss.yml
     secrets: inherit
     with:

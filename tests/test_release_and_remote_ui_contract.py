@@ -67,11 +67,19 @@ class ReleaseAndRemoteUiContractTest(unittest.TestCase):
         self.assertIn("if (_pi.currentDisplay < _pi.displays.length)", peer_info)
         self.assertIn("updateCurDisplay(sessionId);", peer_info)
 
-    def test_release_snapshot_requires_standard_and_sos_editions(self):
+    def test_release_snapshot_requires_both_desktop_editions_but_not_android_sos(self):
         caller = (ROOT / ".github/workflows/flutter-tag.yml").read_text()
         self.assertIn("validate-release-selection.py", caller)
         validator = (ROOT / ".github/scripts/validate-release-selection.py").read_text()
-        self.assertIn("完整发布快照必须同时构建 standard 和 SOS", validator)
+        self.assertIn("桌面发布快照必须同时构建 standard 和 SOS", validator)
+        self.assertIn("Android 发布必须构建 standard", validator)
+        self.assertIn("inputs.platforms != 'android'", caller)
+
+    def test_android_release_builds_only_the_standard_edition(self):
+        workflow = (ROOT / ".github/workflows/flutter-build.yml").read_text()
+        android_job = workflow[workflow.index("  build-rustdesk-android:") :]
+        android_job = android_job[: android_job.index("\n    name:")]
+        self.assertIn("inputs.edition == 'standard'", android_job)
 
     def test_oss_publish_probes_the_requested_release_and_fails_closed(self):
         workflow = (ROOT / ".github/workflows/publish-oss.yml").read_text()
@@ -115,7 +123,10 @@ class ReleaseAndRemoteUiContractTest(unittest.TestCase):
         self.assertIn("fail-fast: true", caller)
         self.assertIn("group: flutter-tag-release", caller)
         self.assertIn("cancel-in-progress: false", caller)
-        self.assertIn("if: inputs.standard && inputs.sos", caller)
+        self.assertIn(
+            "if: inputs.standard && (inputs.sos || inputs.platforms == 'android')",
+            caller,
+        )
         self.assertIn("校验 Android 发布签名", caller)
         self.assertIn("Android 发布必须配置长期签名证书", caller)
         self.assertIn("Android 发布必须始终使用固定长期签名证书", agents)

@@ -33,6 +33,17 @@ TARGET_SUFFIXES = {
     "macos-aarch64-dmg": ("macos-aarch64.dmg", "aarch64.dmg"),
     "android-aarch64-apk": ("android-aarch64-signed.apk", "android-aarch64.apk"),
 }
+TARGET_EDITIONS = {
+    "windows-x86_64-exe": ("standard", "sos"),
+    "windows-x86_64-msi": ("standard", "sos"),
+    "macos-aarch64-dmg": ("standard", "sos"),
+    "android-aarch64-apk": ("standard",),
+}
+EXPECTED_TARGETS = {
+    f"{base_key}-{edition}"
+    for base_key, editions in TARGET_EDITIONS.items()
+    for edition in editions
+}
 
 
 class PublishError(RuntimeError):
@@ -82,18 +93,16 @@ def resolve_release_assets(directory, version, snapshot=None):
             if not path.is_file():
                 raise PublishError(f"Missing release asset for {target_key}")
             resolved[target_key] = path
-        if set(resolved) != {
-            f"{base_key}-{edition}"
-            for edition in ("standard", "sos")
-            for base_key in TARGET_SUFFIXES
-        }:
-            raise PublishError("Release snapshot must contain exactly 8 target keys")
+        if set(resolved) != EXPECTED_TARGETS:
+            raise PublishError(
+                f"Release snapshot must contain exactly {len(EXPECTED_TARGETS)} target keys"
+            )
         if set(files) != set(resolved.values()):
             raise PublishError("Release snapshot files do not match target metadata")
         return resolved
     resolved = {}
-    for edition in ("standard", "sos"):
-        for base_key, suffixes in TARGET_SUFFIXES.items():
+    for base_key, suffixes in TARGET_SUFFIXES.items():
+        for edition in TARGET_EDITIONS[base_key]:
             candidates = [directory / f"rustdesk-{version}-{edition}-{suffix}" for suffix in suffixes]
             matches = [path for path in candidates if path.is_file()]
             if not matches:
@@ -101,9 +110,11 @@ def resolve_release_assets(directory, version, snapshot=None):
             if len(matches) != 1:
                 raise PublishError(f"Ambiguous release assets for {base_key}-{edition}: {matches}")
             resolved[f"{base_key}-{edition}"] = matches[0]
-    if len(files) != 8 or set(files) != set(resolved.values()):
+    if len(files) != len(EXPECTED_TARGETS) or set(files) != set(resolved.values()):
         all_files = sorted(path.name for path in directory.iterdir() if path.is_file())
-        raise PublishError(f"Expected exactly 8 release assets, found {all_files}")
+        raise PublishError(
+            f"Expected exactly {len(EXPECTED_TARGETS)} release assets, found {all_files}"
+        )
     return resolved
 
 
@@ -407,7 +418,7 @@ def valid_complete_catalog(bucket, catalog_key, object_keys, prefix, tag):
         or catalog.get("tag") != tag
         or not isinstance(catalog.get("published_at"), int)
         or not isinstance(assets, list)
-        or len(assets) != 8
+        or len(assets) != len(EXPECTED_TARGETS)
     ):
         return None
     asset_keys = set()
