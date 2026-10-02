@@ -463,7 +463,7 @@ void main() {
 
     expect(tester.takeException(), isNull);
     expect(find.textContaining('2026100202'), findsOneWidget);
-    expect(find.text('Not checked'), findsOneWidget);
+    expect(find.text('Latest version: Not checked'), findsOneWidget);
     await tester.tap(find.text('Check for updates'));
     await tester.pump();
     expect(checks, 1);
