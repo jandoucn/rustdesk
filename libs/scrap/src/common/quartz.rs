@@ -107,14 +107,22 @@ impl<'a> crate::TraitPixelBuffer for PixelBuffer<'a> {
 
 pub struct Display(quartz::Display);
 
+fn active_displays<T>(online: Vec<T>, mut is_active: impl FnMut(&T) -> bool) -> Vec<T> {
+    online
+        .into_iter()
+        .filter(|display| is_active(display))
+        .collect()
+}
+
 impl Display {
     pub fn primary() -> io::Result<Display> {
         Ok(Display(quartz::Display::primary()))
     }
 
     pub fn all() -> io::Result<Vec<Display>> {
-        Ok(quartz::Display::online()
-            .map_err(|_| io::Error::from(io::ErrorKind::Other))?
+        let online =
+            quartz::Display::online().map_err(|_| io::Error::from(io::ErrorKind::Other))?;
+        Ok(active_displays(online, |display| display.is_active())
             .into_iter()
             .map(Display)
             .collect())
@@ -147,5 +155,23 @@ impl Display {
 
     pub fn is_primary(&self) -> bool {
         self.0.is_primary()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::active_displays;
+
+    #[test]
+    fn active_displays_exclude_inactive_online_displays() {
+        assert_eq!(
+            active_displays(vec![1, 2], |display| *display == 2),
+            vec![2]
+        );
+    }
+
+    #[test]
+    fn inactive_online_displays_are_excluded() {
+        assert!(active_displays(vec![1, 2], |_| false).is_empty());
     }
 }

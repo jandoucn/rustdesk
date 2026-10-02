@@ -1110,7 +1110,7 @@ impl Connection {
                         Some(message::Union::PeerInfo(_pi)) => {
                             conn.refresh_video_display(None);
                             #[cfg(target_os = "macos")]
-                            conn.retina.set_displays(&_pi.displays);
+                            conn.retina.set_displays(&_pi.displays, conn.display_idx);
                         }
                         Some(message::Union::CursorPosition(pos)) => {
                             #[cfg(not(any(target_os = "android", target_os = "ios")))]
@@ -2131,7 +2131,7 @@ impl Connection {
                     // But the displays may be updated later, before creating the video capturer.
                     #[cfg(target_os = "macos")]
                     {
-                        self.retina.set_displays(&displays);
+                        self.retina.set_displays(&displays, primary_display_idx);
                     }
                     // A separate primary lookup here could race with display hot-plug.
                     self.display_idx = primary_display_idx;
@@ -4615,6 +4615,8 @@ impl Connection {
         }
         lock.subscribe(&new_service_name, self.inner.clone(), true);
         self.display_idx = display_idx;
+        #[cfg(target_os = "macos")]
+        self.retina.select_display(display_idx);
         true
     }
 
@@ -6698,13 +6700,59 @@ extern "C" fn connection_shutdown_hook() {
 #[derive(Debug, Default)]
 struct Retina {
     displays: Vec<DisplayInfo>,
+    selected_display_name: Option<String>,
 }
 
 #[cfg(target_os = "macos")]
 impl Retina {
     #[inline]
-    fn set_displays(&mut self, displays: &Vec<DisplayInfo>) {
+    fn set_displays(&mut self, displays: &Vec<DisplayInfo>, current: usize) {
+        let selected_display_name = self.selected_display_name.take().or_else(|| {
+            self.displays
+                .get(current)
+                .map(|display| display.name.clone())
+        });
         self.displays = displays.clone();
+        self.selected_display_name = selected_display_name
+            .filter(|name| self.displays.iter().any(|display| display.name == *name))
+            .or_else(|| {
+                self.displays
+                    .get(current)
+                    .map(|display| display.name.clone())
+            })
+            .or_else(|| (self.displays.len() == 1).then(|| self.displays[0].name.clone()));
+    }
+
+    #[inline]
+    fn select_display(&mut self, current: usize) {
+        self.selected_display_name = self
+            .displays
+            .get(current)
+            .map(|display| display.name.clone());
+    }
+
+    fn display_matching(
+        &self,
+        current: usize,
+        mut contains: impl FnMut(&DisplayInfo) -> bool,
+    ) -> Option<&DisplayInfo> {
+        if let Some(display) = self
+            .selected_display_name
+            .as_ref()
+            .and_then(|name| self.displays.iter().find(|display| display.name == *name))
+        {
+            if contains(display) {
+                return Some(display);
+            }
+        } else if let Some(display) = self.displays.get(current) {
+            if contains(display) {
+                return Some(display);
+            }
+        }
+
+        let mut matches = self.displays.iter().filter(|display| contains(display));
+        let display = matches.next()?;
+        matches.next().is_none().then_some(display)
     }
 
     #[inline]
@@ -6718,11 +6766,14 @@ impl Retina {
         {
             return;
         }
-        let Some(d) = self.displays.get(current) else {
+        let contains = |d: &DisplayInfo| {
+            e.x >= d.x && e.y >= d.y && e.x < d.x + d.width && e.y < d.y + d.height
+        };
+        let Some(d) = self.display_matching(current, contains) else {
             return;
         };
         let s = d.scale;
-        if s > 1.0 && e.x >= d.x && e.y >= d.y && e.x < d.x + d.width && e.y < d.y + d.height {
+        if s > 1.0 {
             e.x = d.x + ((e.x - d.x) as f64 / s) as i32;
             e.y = d.y + ((e.y - d.y) as f64 / s) as i32;
         }
@@ -6730,16 +6781,18 @@ impl Retina {
 
     #[inline]
     fn on_cursor_pos(&mut self, pos: &CursorPosition, current: usize) -> Option<Message> {
-        let Some(d) = self.displays.get(current) else {
+        let contains = |d: &DisplayInfo| {
+            let s = d.scale.max(1.0);
+            pos.x >= d.x
+                && pos.y >= d.y
+                && (pos.x - d.x) as f64 * s < d.width as f64
+                && (pos.y - d.y) as f64 * s < d.height as f64
+        };
+        let Some(d) = self.display_matching(current, contains) else {
             return None;
         };
         let s = d.scale;
-        if s > 1.0
-            && pos.x >= d.x
-            && pos.y >= d.y
-            && (pos.x - d.x) as f64 * s < d.width as f64
-            && (pos.y - d.y) as f64 * s < d.height as f64
-        {
+        if s > 1.0 {
             let mut pos = pos.clone();
             pos.x = d.x + ((pos.x - d.x) as f64 * s) as i32;
             pos.y = d.y + ((pos.y - d.y) as f64 * s) as i32;
@@ -7540,6 +7593,7 @@ mod test {
                 scale: 2.0,
                 ..Default::default()
             }],
+            ..Default::default()
         };
         let mut mouse: MouseEvent = MouseEvent {
             x: 510,
@@ -7558,6 +7612,262 @@ mod test {
         let pos = msg.cursor_position();
         assert_eq!(pos.x, 510);
         assert_eq!(pos.y, 510);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn retina_mouse_event_uses_display_containing_the_pointer() {
+        let mut retina = Retina {
+            displays: vec![
+                DisplayInfo {
+                    x: 0,
+                    y: 0,
+                    width: 2000,
+                    height: 1200,
+                    scale: 2.0,
+                    ..Default::default()
+                },
+                DisplayInfo {
+                    x: 1000,
+                    y: 0,
+                    width: 2560,
+                    height: 1440,
+                    scale: 2.0,
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        };
+        let mut mouse = MouseEvent {
+            x: 2280,
+            y: 720,
+            ..Default::default()
+        };
+
+        retina.on_mouse_event(&mut mouse, 0);
+
+        assert_eq!((mouse.x, mouse.y), (1640, 360));
+
+        let pos = CursorPosition {
+            x: 1640,
+            y: 360,
+            ..Default::default()
+        };
+        let msg = retina.on_cursor_pos(&pos, 0).unwrap();
+        let pos = msg.cursor_position();
+        assert_eq!((pos.x, pos.y), (2280, 720));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn retina_mouse_event_supports_negative_secondary_display_origin() {
+        let mut retina = Retina {
+            displays: vec![
+                DisplayInfo {
+                    x: 0,
+                    y: 0,
+                    width: 2000,
+                    height: 1200,
+                    scale: 2.0,
+                    ..Default::default()
+                },
+                DisplayInfo {
+                    x: -1280,
+                    y: -200,
+                    width: 2560,
+                    height: 2048,
+                    scale: 2.0,
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        };
+        let mut mouse = MouseEvent {
+            x: -640,
+            y: 300,
+            ..Default::default()
+        };
+
+        retina.on_mouse_event(&mut mouse, 0);
+
+        assert_eq!((mouse.x, mouse.y), (-960, 50));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn retina_uses_remaining_display_after_primary_is_removed() {
+        let mut retina = Retina {
+            displays: vec![
+                DisplayInfo {
+                    x: 0,
+                    y: 0,
+                    width: 2000,
+                    height: 1200,
+                    scale: 2.0,
+                    ..Default::default()
+                },
+                DisplayInfo {
+                    x: 1000,
+                    y: 0,
+                    width: 2560,
+                    height: 1440,
+                    scale: 2.0,
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        };
+        retina.set_displays(
+            &vec![DisplayInfo {
+                x: 0,
+                y: 0,
+                width: 2560,
+                height: 1440,
+                scale: 2.0,
+                ..Default::default()
+            }],
+            1,
+        );
+        let mut mouse = MouseEvent {
+            x: 1280,
+            y: 720,
+            ..Default::default()
+        };
+
+        retina.on_mouse_event(&mut mouse, 1);
+
+        assert_eq!((mouse.x, mouse.y), (640, 360));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn retina_scale_one_display_keeps_coordinates_unchanged() {
+        let mut retina = Retina {
+            displays: vec![DisplayInfo {
+                x: -1920,
+                y: 0,
+                width: 1920,
+                height: 1080,
+                scale: 1.0,
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let mut mouse = MouseEvent {
+            x: -960,
+            y: 540,
+            ..Default::default()
+        };
+
+        retina.on_mouse_event(&mut mouse, 0);
+
+        assert_eq!((mouse.x, mouse.y), (-960, 540));
+        assert!(retina
+            .on_cursor_pos(
+                &CursorPosition {
+                    x: -960,
+                    y: 540,
+                    ..Default::default()
+                },
+                0,
+            )
+            .is_none());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn retina_does_not_guess_when_stale_index_matches_multiple_displays() {
+        let mut retina = Retina {
+            displays: vec![
+                DisplayInfo {
+                    x: 0,
+                    y: 0,
+                    width: 2000,
+                    height: 1200,
+                    scale: 2.0,
+                    ..Default::default()
+                },
+                DisplayInfo {
+                    x: 1000,
+                    y: 0,
+                    width: 2560,
+                    height: 1440,
+                    scale: 2.0,
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        };
+        let mut mouse = MouseEvent {
+            x: 1500,
+            y: 600,
+            ..Default::default()
+        };
+
+        retina.on_mouse_event(&mut mouse, 2);
+
+        assert_eq!((mouse.x, mouse.y), (1500, 600));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn retina_keeps_selected_display_by_name_after_reorder() {
+        let mut retina = Retina::default();
+        retina.set_displays(
+            &vec![
+                DisplayInfo {
+                    name: "primary".to_owned(),
+                    x: 0,
+                    y: 0,
+                    width: 2000,
+                    height: 1200,
+                    scale: 2.0,
+                    ..Default::default()
+                },
+                DisplayInfo {
+                    name: "secondary".to_owned(),
+                    x: 1000,
+                    y: 0,
+                    width: 2560,
+                    height: 1440,
+                    scale: 2.0,
+                    ..Default::default()
+                },
+            ],
+            1,
+        );
+        retina.set_displays(
+            &vec![
+                DisplayInfo {
+                    name: "secondary".to_owned(),
+                    x: 1000,
+                    y: 0,
+                    width: 2560,
+                    height: 1440,
+                    scale: 2.0,
+                    ..Default::default()
+                },
+                DisplayInfo {
+                    name: "primary".to_owned(),
+                    x: 0,
+                    y: 0,
+                    width: 2000,
+                    height: 1200,
+                    scale: 2.0,
+                    ..Default::default()
+                },
+            ],
+            1,
+        );
+        let mut mouse = MouseEvent {
+            x: 1500,
+            y: 600,
+            ..Default::default()
+        };
+
+        retina.on_mouse_event(&mut mouse, 1);
+
+        assert_eq!((mouse.x, mouse.y), (1250, 300));
     }
 
     #[test]
