@@ -6,6 +6,16 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class ReleaseAndRemoteUiContractTest(unittest.TestCase):
+    def test_macos_mouse_buttons_keep_the_upstream_cursor_location_path(self):
+        source = (ROOT / "libs/enigo/src/macos/macos_impl.rs").read_text()
+        mouse_down = source[source.index("fn mouse_down"):source.index("fn mouse_up")]
+        mouse_up = source[source.index("fn mouse_up"):source.index("fn mouse_click")]
+
+        self.assertIn("Self::mouse_location()", mouse_down)
+        self.assertIn("Self::mouse_location()", mouse_up)
+        self.assertNotIn("self.current_mouse_location()", mouse_down)
+        self.assertNotIn("self.current_mouse_location()", mouse_up)
+
     def test_release_snapshot_requires_standard_and_sos_editions(self):
         caller = (ROOT / ".github/workflows/flutter-tag.yml").read_text()
         self.assertIn("validate-release-selection.py", caller)

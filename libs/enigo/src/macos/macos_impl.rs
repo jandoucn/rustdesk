@@ -89,6 +89,13 @@ extern "C" {
     fn CGEventSourceKeyState(stateID: i32, key: u16) -> bool;
 }
 
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct NSPoint {
+    x: f64,
+    y: f64,
+}
+
 // not present in servo/core-graphics
 #[allow(dead_code)]
 #[derive(Debug)]
@@ -237,7 +244,7 @@ impl MouseControllable for Enigo {
     }
 
     fn mouse_move_relative(&mut self, x: i32, y: i32) {
-        let (current_x, current_y) = self.current_mouse_location();
+        let (current_x, current_y) = Self::mouse_location();
         let (new_x, new_y) = relative_mouse_target((current_x, current_y), (x, y));
 
         // Pass delta values for relative movement
@@ -257,7 +264,7 @@ impl MouseControllable for Enigo {
             }
         }
         self.last_click_time = Some(now);
-        let (current_x, current_y) = self.current_mouse_location();
+        let (current_x, current_y) = Self::mouse_location();
         let (button, event_type, btn_value) = match button {
             MouseButton::Left => (CGMouseButton::Left, CGEventType::LeftMouseDown, None),
             MouseButton::Middle => (CGMouseButton::Center, CGEventType::OtherMouseDown, None),
@@ -296,7 +303,7 @@ impl MouseControllable for Enigo {
     }
 
     fn mouse_up(&mut self, button: MouseButton) {
-        let (current_x, current_y) = self.current_mouse_location();
+        let (current_x, current_y) = Self::mouse_location();
         let (button, event_type, btn_value) = match button {
             MouseButton::Left => (CGMouseButton::Left, CGEventType::LeftMouseUp, None),
             MouseButton::Middle => (CGMouseButton::Center, CGEventType::OtherMouseUp, None),
@@ -519,25 +526,24 @@ impl Enigo {
         (width, height)
     }
 
-    fn location_from_source(source: &CGEventSource) -> Option<(i32, i32)> {
-        let point = CGEvent::new(source.clone()).ok()?.location();
-        Some((point.x as i32, point.y as i32))
+    /// Returns the current mouse location in Cocoa coordinates which have Y
+    /// inverted from the Carbon coordinates used in the rest of the API.
+    /// This function exists so that mouse_move_relative only has to fetch
+    /// the screen size once.
+    fn mouse_location_raw_coords() -> (i32, i32) {
+        if let Some(ns_event) = Class::get("NSEvent") {
+            let pt: NSPoint = unsafe { msg_send![ns_event, mouseLocation] };
+            (pt.x as i32, pt.y as i32)
+        } else {
+            (0, 0)
+        }
     }
 
-    fn current_mouse_location(&self) -> (i32, i32) {
-        self.event_source
-            .as_ref()
-            .and_then(Self::location_from_source)
-            .unwrap_or_default()
-    }
-
-    /// The mouse coordinates in the global CoreGraphics display space.
+    /// The mouse coordinates in points, only works on the main display
     pub fn mouse_location() -> (i32, i32) {
-        CGEventSource::new(CGEventSourceStateID::CombinedSessionState)
-            .ok()
-            .as_ref()
-            .and_then(Self::location_from_source)
-            .unwrap_or_default()
+        let (x, y_inv) = Self::mouse_location_raw_coords();
+        let (_, display_height) = Self::main_display_size();
+        (x, (display_height as i32) - y_inv)
     }
 
     fn key_to_keycode(&mut self, key: Key) -> CGKeyCode {
