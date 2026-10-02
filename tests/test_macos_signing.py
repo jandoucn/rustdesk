@@ -47,9 +47,23 @@ class MacosSigningTest(unittest.TestCase):
                 encoding="utf-8",
             )
             codesign.chmod(0o755)
+            plutil = bin_dir / "plutil"
+            plutil.write_text(
+                "#!/bin/sh\n"
+                "cat >/dev/null\n"
+                "printf 'true\\n'\n",
+                encoding="utf-8",
+            )
+            plutil.chmod(0o755)
 
             env = os.environ.copy()
-            env.update({"PATH": f"{bin_dir}:{env['PATH']}", "TEST_LOG": str(log)})
+            env.update(
+                {
+                    "PATH": f"{bin_dir}:{env['PATH']}",
+                    "PLIST_BUDDY": str(root / "missing-PlistBuddy"),
+                    "TEST_LOG": str(log),
+                }
+            )
             result = subprocess.run(
                 ["bash", str(SIGN_SCRIPT), str(app), "-", str(entitlements)],
                 text=True,

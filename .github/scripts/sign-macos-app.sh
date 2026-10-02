@@ -5,6 +5,7 @@ set -euo pipefail
 app_path=$1
 identity=$2
 entitlements=$3
+plist_buddy=${PLIST_BUDDY:-/usr/libexec/PlistBuddy}
 
 sign_args=(--force --sign "$identity")
 if [[ "$identity" != "-" ]]; then
@@ -13,8 +14,19 @@ fi
 
 app_sign_args=("${sign_args[@]}")
 if [[ "$identity" == "-" ]]; then
-  bundle_id=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' \
-    "$app_path/Contents/Info.plist")
+  if [[ -x "$plist_buddy" ]]; then
+    bundle_id=$("$plist_buddy" -c 'Print :CFBundleIdentifier' \
+      "$app_path/Contents/Info.plist")
+  else
+    bundle_id=$(python3 - "$app_path/Contents/Info.plist" <<'PY'
+import plistlib
+import sys
+
+with open(sys.argv[1], "rb") as stream:
+    print(plistlib.load(stream).get("CFBundleIdentifier", ""))
+PY
+)
+  fi
   [[ -n "$bundle_id" ]] || {
     echo "Missing CFBundleIdentifier in $app_path" >&2
     exit 1
