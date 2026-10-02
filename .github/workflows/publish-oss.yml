@@ -6,6 +6,18 @@ on:
       tag:
         required: true
         type: string
+      version:
+        required: true
+        type: string
+      build_number:
+        required: true
+        type: string
+      build_seq:
+        required: true
+        type: string
+      android_version_code:
+        required: true
+        type: string
     secrets:
       ALIYUN_ACCESS_KEY_ID:
         required: true
@@ -61,6 +73,17 @@ jobs:
 
       - name: Install OSS publisher
         run: python3 -m pip install --disable-pip-version-check oss2 pynacl
+
+      - name: 同步发布版本元数据
+        run: |
+          if [ -n "${{ inputs.version }}" ]; then
+            python3 .github/scripts/release-metadata.py apply \
+              --metadata release-source/version.json \
+              --version "${{ inputs.version }}" \
+              --build-number "${{ inputs.build_number }}" \
+              --build-seq "${{ inputs.build_seq }}" \
+              --android-version-code "${{ inputs.android_version_code }}"
+          fi
 
       - name: Publish assets and update manifest
         env:

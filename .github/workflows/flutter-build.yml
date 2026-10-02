@@ -27,6 +27,9 @@ on:
       build_seq:
         type: string
         default: "2026093005"
+      android_version_code:
+        type: string
+        default: "2026093005"
       publish_release_assets:
         type: boolean
         default: false
@@ -72,6 +75,7 @@ env:
   PRODUCT: "rustdesk-yan"
   BUILD_NUMBER: "${{ inputs.build_number }}"
   BUILD_SEQ: "${{ inputs.build_seq }}"
+  ANDROID_VERSION_CODE: "${{ inputs.android_version_code }}"
   CHANNEL: "stable"
   RUSTDESK_SOS: ${{ inputs.edition == 'sos' && '1' || '' }}
   RUSTDESK_EDITION: ${{ inputs.edition }}
@@ -179,6 +183,16 @@ jobs:
 
       - name: Checkout source code
         uses: actions/checkout@v4
+
+      - name: 同步发布版本元数据
+        shell: bash
+        run: |
+          python3 .github/scripts/release-metadata.py apply \
+            --metadata version.json \
+            --version "$VERSION" \
+            --build-number "$BUILD_NUMBER" \
+            --build-seq "$BUILD_SEQ" \
+            --android-version-code "$ANDROID_VERSION_CODE"
 
       - name: Restore bridge files
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
@@ -830,6 +844,16 @@ jobs:
         with:
           submodules: recursive
 
+      - name: 同步发布版本元数据
+        shell: bash
+        run: |
+          python3 .github/scripts/release-metadata.py apply \
+            --metadata version.json \
+            --version "$VERSION" \
+            --build-number "$BUILD_NUMBER" \
+            --build-seq "$BUILD_SEQ" \
+            --android-version-code "$ANDROID_VERSION_CODE"
+
       - name: Import the codesign cert
         if: env.MACOS_P12_BASE64 != null
         uses: apple-actions/import-codesign-certs@253ddeeac23f2bdad1646faac5c8c2832e800071 # v1
@@ -1187,6 +1211,16 @@ jobs:
         with:
           submodules: recursive
 
+      - name: 同步发布版本元数据
+        shell: bash
+        run: |
+          python3 .github/scripts/release-metadata.py apply \
+            --metadata version.json \
+            --version "$VERSION" \
+            --build-number "$BUILD_NUMBER" \
+            --build-seq "$BUILD_SEQ" \
+            --android-version-code "$ANDROID_VERSION_CODE"
+
       - name: Install flutter
         uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2
         with:
@@ -1311,7 +1345,7 @@ jobs:
               cp ./target/${{ matrix.job.target }}/release/liblibrustdesk.so ./flutter/android/app/src/main/jniLibs/arm64-v8a/librustdesk.so
               # build flutter
               pushd flutter
-              flutter build apk "--${{ matrix.job.reltype }}" --target-platform android-arm64 --split-per-abi
+              flutter build apk "--${{ matrix.job.reltype }}" --target-platform android-arm64 --split-per-abi --build-name "${VERSION}" --build-number "${ANDROID_VERSION_CODE}"
               mv build/app/outputs/flutter-apk/app-arm64-v8a-${{ matrix.job.reltype }}.apk ../rustdesk-${{ env.VERSION }}-${{ env.BUILD_SEQ }}-${{ env.EDITION }}-android-${{ matrix.job.arch }}${{ matrix.job.suffix }}.apk
             ;;
             armv7-linux-androideabi)
@@ -1320,7 +1354,7 @@ jobs:
               cp ./target/${{ matrix.job.target }}/release/liblibrustdesk.so ./flutter/android/app/src/main/jniLibs/armeabi-v7a/librustdesk.so
               # build flutter
               pushd flutter
-              flutter build apk "--${{ matrix.job.reltype }}" --target-platform android-arm --split-per-abi
+              flutter build apk "--${{ matrix.job.reltype }}" --target-platform android-arm --split-per-abi --build-name "${VERSION}" --build-number "${ANDROID_VERSION_CODE}"
               mv build/app/outputs/flutter-apk/app-armeabi-v7a-${{ matrix.job.reltype }}.apk ../rustdesk-${{ env.VERSION }}-${{ env.EDITION }}-${{ matrix.job.arch }}${{ matrix.job.suffix }}.apk
             ;;
             x86_64-linux-android)
@@ -1329,7 +1363,7 @@ jobs:
               cp ./target/${{ matrix.job.target }}/release/liblibrustdesk.so ./flutter/android/app/src/main/jniLibs/x86_64/librustdesk.so
               # build flutter
               pushd flutter
-              flutter build apk "--${{ matrix.job.reltype }}" --target-platform android-x64 --split-per-abi
+              flutter build apk "--${{ matrix.job.reltype }}" --target-platform android-x64 --split-per-abi --build-name "${VERSION}" --build-number "${ANDROID_VERSION_CODE}"
               mv build/app/outputs/flutter-apk/app-x86_64-${{ matrix.job.reltype }}.apk ../rustdesk-${{ env.VERSION }}-${{ env.EDITION }}-${{ matrix.job.arch }}${{ matrix.job.suffix }}.apk
             ;;
             i686-linux-android)
@@ -1338,7 +1372,7 @@ jobs:
               cp ./target/${{ matrix.job.target }}/release/liblibrustdesk.so ./flutter/android/app/src/main/jniLibs/x86/librustdesk.so
               # build flutter
               pushd flutter
-              flutter build apk "--${{ matrix.job.reltype }}" --target-platform android-x86 --split-per-abi
+              flutter build apk "--${{ matrix.job.reltype }}" --target-platform android-x86 --split-per-abi --build-name "${VERSION}" --build-number "${ANDROID_VERSION_CODE}"
               mv build/app/outputs/flutter-apk/app-x86-${{ matrix.job.reltype }}.apk ../rustdesk-${{ env.VERSION }}-${{ env.EDITION }}-${{ matrix.job.arch }}${{ matrix.job.suffix }}.apk
             ;;
           esac
@@ -1353,6 +1387,19 @@ jobs:
           BUILD_TOOL_VERSION=$(ls /usr/local/lib/android/sdk/build-tools/ | tail -n 1)
           echo "ANDROID_SIGN_TOOL_VERSION=$BUILD_TOOL_VERSION" >> $GITHUB_ENV
           echo Last build tool version is: $BUILD_TOOL_VERSION
+
+      - name: 校验 Android APK 内部版本
+        shell: bash
+        run: |
+          set -euo pipefail
+          aapt="$ANDROID_HOME/build-tools/$ANDROID_SIGN_TOOL_VERSION/aapt"
+          for apk in signed-apk/*.apk; do
+            python3 .github/scripts/validate-android-apk.py "$apk" \
+              --aapt "$aapt" \
+              --expected-package com.carriez.flutter_hbb \
+              --expected-version "$VERSION" \
+              --base-version-code "$ANDROID_VERSION_CODE"
+          done
 
       - uses: r0adkll/sign-android-release@349ebdef58775b1e0d8099458af0816dc79b6407 # v1
         name: Sign app APK
@@ -1536,7 +1583,7 @@ jobs:
           fi
           # build flutter
           pushd flutter
-          flutter build apk "--${{ env.reltype }}" --target-platform android-arm64,android-arm,android-x64${{ env.x86_target }}
+          flutter build apk "--${{ env.reltype }}" --target-platform android-arm64,android-arm,android-x64${{ env.x86_target }} --build-name "${VERSION}" --build-number "${ANDROID_VERSION_CODE}"
           popd
           mkdir -p signed-apk
           mv ./flutter/build/app/outputs/flutter-apk/app-${{ env.reltype }}.apk signed-apk/rustdesk-${{ env.VERSION }}-${{ env.EDITION }}-universal${{ env.suffix }}.apk
@@ -1548,6 +1595,19 @@ jobs:
           BUILD_TOOL_VERSION=$(ls /usr/local/lib/android/sdk/build-tools/ | tail -n 1)
           echo "ANDROID_SIGN_TOOL_VERSION=$BUILD_TOOL_VERSION" >> $GITHUB_ENV
           echo Last build tool version is: $BUILD_TOOL_VERSION
+
+      - name: 校验 Android universal APK 内部版本
+        shell: bash
+        run: |
+          set -euo pipefail
+          aapt="$ANDROID_HOME/build-tools/$ANDROID_SIGN_TOOL_VERSION/aapt"
+          for apk in signed-apk/*.apk; do
+            python3 .github/scripts/validate-android-apk.py "$apk" \
+              --aapt "$aapt" \
+              --expected-package com.carriez.flutter_hbb \
+              --expected-version "$VERSION" \
+              --base-version-code "$ANDROID_VERSION_CODE"
+          done
 
       - uses: r0adkll/sign-android-release@349ebdef58775b1e0d8099458af0816dc79b6407 # v1
         name: Sign app APK

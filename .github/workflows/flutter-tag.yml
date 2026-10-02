@@ -35,6 +35,7 @@ jobs:
       version: ${{ steps.date.outputs.version }}
       build_number: ${{ steps.date.outputs.build_number }}
       build_seq: ${{ steps.date.outputs.build_seq }}
+      android_version_code: ${{ steps.date.outputs.android_version_code }}
     steps:
       - uses: actions/checkout@v4
       - id: date
@@ -47,9 +48,16 @@ jobs:
             "$PLATFORMS" \
             "${{ inputs.standard }}" \
             "${{ inputs.sos }}"
-          version=$(python3 -c 'import json; print(json.load(open("version.json"))["version"])')
-          build_number=$(python3 -c 'import json; print(json.load(open("version.json"))["build_number"])')
-          build_seq=$(python3 -c 'import json; print(json.load(open("version.json"))["build_seq"])')
+          git fetch --force --tags origin
+          git tag --list > release-tags.txt
+          python3 .github/scripts/release-metadata.py resolve \
+            --metadata version.json \
+            --tags-file release-tags.txt \
+            --output release-metadata.json
+          version=$(python3 -c 'import json; print(json.load(open("release-metadata.json"))["version"])')
+          build_number=$(python3 -c 'import json; print(json.load(open("release-metadata.json"))["build_number"])')
+          build_seq=$(python3 -c 'import json; print(json.load(open("release-metadata.json"))["build_seq"])')
+          android_version_code=$(python3 -c 'import json; print(json.load(open("release-metadata.json"))["android_version_code"])')
           build_date="${build_number%%[.-]*}"
           if [[ ! "$build_date" =~ ^[0-9]{8}$ ]]; then
             echo "Invalid build date in version.json: $build_number" >&2
@@ -83,6 +91,7 @@ jobs:
           echo "version=$version" >> "$GITHUB_OUTPUT"
           echo "build_number=$build_number" >> "$GITHUB_OUTPUT"
           echo "build_seq=$build_seq" >> "$GITHUB_OUTPUT"
+          echo "android_version_code=$android_version_code" >> "$GITHUB_OUTPUT"
           echo "Release tag: $tag"
           echo "Release name: $release_name"
 
@@ -158,6 +167,7 @@ jobs:
       version: ${{ needs.release-tag.outputs.version }}
       build_number: ${{ needs.release-tag.outputs.build_number }}
       build_seq: ${{ needs.release-tag.outputs.build_seq }}
+      android_version_code: ${{ needs.release-tag.outputs.android_version_code }}
       publish_release_assets: false
 
   publish-release:
@@ -184,6 +194,12 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          python3 .github/scripts/release-metadata.py apply \
+            --metadata version.json \
+            --version "${{ needs.release-tag.outputs.version }}" \
+            --build-number "${{ needs.release-tag.outputs.build_number }}" \
+            --build-seq "${{ needs.release-tag.outputs.build_seq }}" \
+            --android-version-code "${{ needs.release-tag.outputs.android_version_code }}"
           python3 .github/scripts/assemble-release-snapshot.py \
             --current-assets current-assets \
             --output release-assets \
@@ -232,6 +248,10 @@ jobs:
     secrets: inherit
     with:
       tag: ${{ inputs.tag != '' && inputs.tag || needs.release-tag.outputs.tag }}
+      version: ${{ needs.release-tag.outputs.version }}
+      build_number: ${{ needs.release-tag.outputs.build_number }}
+      build_seq: ${{ needs.release-tag.outputs.build_seq }}
+      android_version_code: ${{ needs.release-tag.outputs.android_version_code }}
 
   cleanup-incomplete-release:
     needs: [release-tag, run-flutter-tag-build, publish-release, publish-oss]

@@ -7,12 +7,19 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class ReleaseMetadataPolicyTest(unittest.TestCase):
-    def test_failed_build_retry_keeps_semver_and_uses_unique_build_sequence(self):
+    def test_new_semver_starts_at_build_one_with_independent_android_code(self):
         metadata = json.loads((ROOT / "version.json").read_text())
 
         self.assertEqual(metadata["version"], "1.5.2")
-        self.assertEqual(metadata["build_number"], "20261002.6")
-        self.assertEqual(metadata["build_seq"], 2026100206)
+        self.assertEqual(metadata["build_number"], "20261003.1")
+        self.assertEqual(metadata["build_seq"], 2026100301)
+        self.assertEqual(metadata["android_version_code"], 2026100301)
+
+        pubspec = (ROOT / "flutter/pubspec.yaml").read_text()
+        self.assertIn(
+            f'version: {metadata["version"]}+{metadata["android_version_code"]}',
+            pubspec,
+        )
 
     def test_release_metadata_stays_empty_and_uses_the_canonical_tag(self):
         agents = (ROOT / "AGENTS.md").read_text()

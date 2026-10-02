@@ -17,6 +17,7 @@ import android.content.Intent
 import android.content.ServiceConnection
 import android.content.ClipboardManager
 import android.content.pm.PackageInstaller
+import android.content.pm.PackageInfo
 import android.content.pm.PackageManager
 import android.os.Bundle
 import android.os.Build
@@ -63,6 +64,7 @@ class MainActivity : FlutterActivity() {
         private const val KEY_UPDATE_INSTALL_ERROR = "KEY_UPDATE_INSTALL_ERROR"
         private const val STATUS_PERMISSION_REQUIRED = "permission_required"
         private const val STATUS_INSTALLING = "installing"
+        private const val ERROR_APK_VERSION_NOT_NEWER = "update_apk_version_not_newer"
 
         fun emitUpdateInstallStatus(context: Context, status: String, error: String) {
             context.getSharedPreferences(KEY_SHARED_PREFERENCES, Context.MODE_PRIVATE)
@@ -1064,14 +1066,19 @@ class MainActivity : FlutterActivity() {
             } catch (error: Exception) {
                 Log.e(logTag, "Unable to install verified update", error)
                 staged?.delete()
+                val errorCode = if (error.message == ERROR_APK_VERSION_NOT_NEWER) {
+                    ERROR_APK_VERSION_NOT_NEWER
+                } else {
+                    "start_install_failed"
+                }
                 emitUpdateInstallStatus(
                     this,
                     UpdateInstallReceiver.STATUS_FAILED,
-                    "start_install_failed"
+                    errorCode
                 )
                 runOnUiThread {
                     updateInstallBusy = false
-                    result.error("update_install_failed", error.message, null)
+                    result.error(errorCode, error.message, null)
                 }
             }
         }
@@ -1100,7 +1107,11 @@ class MainActivity : FlutterActivity() {
                 emitUpdateInstallStatus(
                     this,
                     UpdateInstallReceiver.STATUS_FAILED,
-                    "resume_install_failed"
+                    if (error.message == ERROR_APK_VERSION_NOT_NEWER) {
+                        ERROR_APK_VERSION_NOT_NEWER
+                    } else {
+                        "resume_install_failed"
+                    }
                 )
             } finally {
                 updateInstallBusy = false
@@ -1139,6 +1150,19 @@ class MainActivity : FlutterActivity() {
             ?: throw IllegalArgumentException("Verified update APK cannot be parsed")
         if (archive.packageName != packageName) {
             throw SecurityException("Verified update APK belongs to another application")
+        }
+        val installed = packageManager.getPackageInfo(packageName, 0)
+        if (packageVersionCode(archive) <= packageVersionCode(installed)) {
+            throw IllegalArgumentException(ERROR_APK_VERSION_NOT_NEWER)
+        }
+    }
+
+    private fun packageVersionCode(info: PackageInfo): Long {
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            info.longVersionCode
+        } else {
+            @Suppress("DEPRECATION")
+            info.versionCode.toLong()
         }
     }
 
@@ -1185,7 +1209,7 @@ class MainActivity : FlutterActivity() {
             }
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
                 params.setRequireUserAction(
-                    PackageInstaller.SessionParams.USER_ACTION_NOT_REQUIRED
+                    PackageInstaller.SessionParams.USER_ACTION_REQUIRED
                 )
             }
             val installer = packageManager.packageInstaller
