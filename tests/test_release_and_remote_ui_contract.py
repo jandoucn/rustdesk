@@ -75,6 +75,7 @@ class ReleaseAndRemoteUiContractTest(unittest.TestCase):
 
     def test_oss_publish_probes_the_requested_release_and_fails_closed(self):
         workflow = (ROOT / ".github/workflows/publish-oss.yml").read_text()
+        agents = (ROOT / "AGENTS.md").read_text()
 
         self.assertIn('RELEASE_TAG: ${{ inputs.tag }}', workflow)
         self.assertIn('gh release download "$RELEASE_TAG"', workflow)
@@ -115,6 +116,12 @@ class ReleaseAndRemoteUiContractTest(unittest.TestCase):
         self.assertIn("if: inputs.standard && inputs.sos", caller)
         self.assertIn("校验 Android 发布签名", caller)
         self.assertIn("Android 发布必须配置长期签名证书", caller)
+        self.assertIn("Android 发布必须始终使用固定长期签名证书", agents)
+        self.assertIn(
+            "71:11:D7:30:EC:A2:C7:98:47:41:53:04:59:DD:38:97:20:16:2F:7B:FE:B7:39:FA:96:8F:2E:D7:4E:6F:0B:D8",
+            agents,
+        )
+        self.assertIn("禁止把 debug 或 unsigned APK 上传到 Release 或 OSS", agents)
         self.assertNotIn("inputs.platforms == 'all'", caller[caller.index("publish-oss:") :])
         self.assertIn("publish-release:", caller)
         self.assertIn("preflight:", caller)
