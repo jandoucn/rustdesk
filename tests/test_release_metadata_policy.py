@@ -11,8 +11,8 @@ class ReleaseMetadataPolicyTest(unittest.TestCase):
         metadata = json.loads((ROOT / "version.json").read_text())
 
         self.assertEqual(metadata["version"], "1.5.1")
-        self.assertEqual(metadata["build_number"], "20261002.4")
-        self.assertEqual(metadata["build_seq"], 2026100204)
+        self.assertEqual(metadata["build_number"], "20261002.5")
+        self.assertEqual(metadata["build_seq"], 2026100205)
 
     def test_release_metadata_stays_empty_and_uses_the_canonical_tag(self):
         agents = (ROOT / "AGENTS.md").read_text()
