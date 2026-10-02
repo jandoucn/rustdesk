@@ -1,7 +1,7 @@
 {
   "product": "rustdesk-yan",
   "edition": "custom",
-  "version": "1.5.2",
+  "version": "1.5.1",
   "build_number": "20261002.3",
   "build_seq": 2026100203,
   "channel": "stable",
