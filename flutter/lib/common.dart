@@ -4226,7 +4226,10 @@ Future<void> startAndroidVerifiedUpdate(Map<String, dynamic> event) async {
   if (path.isEmpty) return;
   stateGlobal.updateStatus.value = 'Installing update';
   try {
-    final result = await gFFI.invokeMethod('install_verified_apk', event);
+    final result = await gFFI.invokeMethodWithResult<Map<dynamic, dynamic>>(
+      'install_verified_apk',
+      event,
+    );
     if (result is Map) {
       final status = result['status']?.toString() ?? '';
       if (status.isNotEmpty) {
@@ -4249,7 +4252,10 @@ Future<void> startAndroidVerifiedUpdate(Map<String, dynamic> event) async {
 
 Future<void> consumePendingAndroidUpdateReady() async {
   if (!isAndroid) return;
-  final nativeStatus = await gFFI.invokeMethod('get_update_install_status');
+  final nativeStatus =
+      await gFFI.invokeMethodWithResult<Map<dynamic, dynamic>>(
+    'get_update_install_status',
+  );
   if (nativeStatus is Map && nativeStatus['status']?.toString() != 'idle') return;
   final encoded = await bind.mainGetCommon(key: 'pending-android-update-ready');
   if (encoded.isEmpty) return;

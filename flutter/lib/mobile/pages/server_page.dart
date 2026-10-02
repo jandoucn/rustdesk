@@ -14,6 +14,7 @@ import '../../common/widgets/dialog.dart';
 import '../../consts.dart';
 import '../../models/platform_model.dart';
 import '../../models/server_model.dart';
+import '../../models/state_model.dart';
 import 'home_page.dart';
 
 class ServerPage extends StatefulWidget implements PageShape {
@@ -925,7 +926,7 @@ Future<void> consumeAndroidUpdateInstallStatus(Map<String, dynamic> values) asyn
 }
 
 Future<void> androidChannelInit() async {
-  gFFI.setMethodCallHandler((method, arguments) async {
+  gFFI.setMethodCallHandler((method, arguments) {
     debugPrint("flutter got android msg,$method,$arguments");
     try {
       switch (method) {
@@ -958,7 +959,11 @@ Future<void> androidChannelInit() async {
         case "on_android_update_install_status":
           {
             final values = Map<String, dynamic>.from(arguments as Map);
-            await consumeAndroidUpdateInstallStatus(values);
+            unawaited(consumeAndroidUpdateInstallStatus(values).catchError(
+              (Object error, StackTrace stackTrace) {
+                debugPrint('Failed to consume Android update status: $error');
+              },
+            ));
             break;
           }
         case "msgbox":
@@ -985,7 +990,9 @@ Future<void> androidChannelInit() async {
     }
     return "";
   });
-  final current = await gFFI.invokeMethod('get_update_install_status');
+  final current = await gFFI.invokeMethodWithResult<Map<dynamic, dynamic>>(
+    'get_update_install_status',
+  );
   if (current is Map && current['status']?.toString() != 'idle') {
     await consumeAndroidUpdateInstallStatus(Map<String, dynamic>.from(current));
   }

@@ -197,8 +197,16 @@ class ReleaseAndRemoteUiContractTest(unittest.TestCase):
         self.assertIn("FileProvider.getUriForFile", android)
 
         common = (ROOT / "flutter/lib/common.dart").read_text()
-        self.assertIn("Future<void> startAndroidVerifiedUpdate(", common)
-        self.assertIn("gFFI.invokeMethod('install_verified_apk', event)", common)
+        installer = common[
+            common.index("Future<void> startAndroidVerifiedUpdate(") : common.index(
+                "Future<void> consumePendingAndroidUpdateReady()"
+            )
+        ]
+        self.assertIn(
+            "gFFI.invokeMethodWithResult<Map<dynamic, dynamic>>(\n"
+            "      'install_verified_apk',",
+            installer,
+        )
         self.assertIn("kAndroidUpdateInstallResult", common)
         self.assertIn("requestOrigin == 'system'", common)
         app = (ROOT / "flutter/lib/main.dart").read_text()
