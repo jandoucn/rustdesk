@@ -11,6 +11,17 @@ if [[ "$identity" != "-" ]]; then
   sign_args+=(--options runtime --timestamp)
 fi
 
+app_sign_args=("${sign_args[@]}")
+if [[ "$identity" == "-" ]]; then
+  bundle_id=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' \
+    "$app_path/Contents/Info.plist")
+  [[ -n "$bundle_id" ]] || {
+    echo "Missing CFBundleIdentifier in $app_path" >&2
+    exit 1
+  }
+  app_sign_args+=(--requirements "=designated => identifier \"$bundle_id\"")
+fi
+
 frameworks_path="$app_path/Contents/Frameworks"
 if [[ -d "$frameworks_path" ]]; then
   while IFS= read -r -d '' code; do
@@ -29,9 +40,19 @@ if [[ -f "$service_path" ]]; then
   codesign "${sign_args[@]}" "$service_path"
 fi
 
-codesign "${sign_args[@]}" --generate-entitlement-der \
+codesign "${app_sign_args[@]}" --generate-entitlement-der \
   --entitlements "$entitlements" "$app_path"
 codesign --verify --deep --strict --verbose=2 "$app_path"
+
+if [[ "$identity" == "-" ]]; then
+  actual_requirement=$(codesign -dr - "$app_path" 2>&1)
+  expected_requirement="designated => identifier \"$bundle_id\""
+  if [[ "$actual_requirement" != *"$expected_requirement"* \
+    || "$actual_requirement" == *'cdhash H"'* ]]; then
+    echo "Unstable ad-hoc designated requirement: $actual_requirement" >&2
+    exit 1
+  fi
+fi
 
 actual_entitlements=$(codesign -d --entitlements :- "$app_path" 2>/dev/null)
 audio_input=$(plutil -extract 'com\.apple\.security\.device\.audio-input' raw - \

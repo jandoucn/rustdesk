@@ -2,6 +2,7 @@
 set -eu
 
 app=${RUSTDESK_APP:-"/Applications/RustDesk Yan.app"}
+script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 bundle_id=${RUSTDESK_BUNDLE_ID:-}
 executable=${RUSTDESK_EXECUTABLE:-}
 status_command=${RUSTDESK_PERMISSION_STATUS_COMMAND:-}
@@ -136,6 +137,47 @@ fi
 say "- 校验应用签名..."
 codesign --verify --deep --strict "$app" >/dev/null 2>&1 || \
     fail "应用签名校验失败，请重新安装完整的 RustDesk Yan.app。"
+
+code_requirement=$(codesign -dr - "$app" 2>&1 || true)
+case "$code_requirement" in
+    *"designated => identifier \"${bundle_id}\""*) ;;
+    *'cdhash H"'*)
+        say "- 当前安装包使用构建级 CDHash 身份，正在迁移为稳定签名身份..."
+        entitlements_file=$(mktemp "${TMPDIR:-/tmp}/rustdesk-entitlements.XXXXXX") || \
+            fail "无法创建签名权限临时文件。"
+        entitlements="$entitlements_file"
+        codesign -d --entitlements :- "$app" >"$entitlements_file" 2>/dev/null || true
+        if ! plutil -lint "$entitlements_file" >/dev/null 2>&1; then
+            entitlements="$script_dir/flutter/macos/Runner/Release.entitlements"
+            if [ ! -f "$entitlements" ]; then
+                rm -f "$entitlements_file"
+                fail "当前安装包没有可读取的签名权限，且找不到：$entitlements"
+            fi
+            say "  当前安装包缺少签名权限，使用仓库内 Release.entitlements 恢复。"
+        fi
+        if ! codesign --force --sign - \
+            --requirements "=designated => identifier \"${bundle_id}\"" \
+            --generate-entitlement-der \
+            --entitlements "$entitlements" \
+            "$app"; then
+            rm -f "$entitlements_file"
+            fail "无法把 RustDesk Yan 迁移为稳定签名身份。"
+        fi
+        rm -f "$entitlements_file"
+        codesign --verify --deep --strict "$app" >/dev/null 2>&1 || \
+            fail "稳定签名完成后校验失败。"
+        code_requirement=$(codesign -dr - "$app" 2>&1 || true)
+        case "$code_requirement" in
+            *"designated => identifier \"${bundle_id}\""*) ;;
+            *) fail "稳定签名身份复检失败：${code_requirement:-未返回 designated requirement}" ;;
+        esac
+        reset_permissions=1
+        say "  已迁移为稳定签名身份；本次将清理旧 CDHash 对应的失效权限记录。"
+        ;;
+    *)
+        fail "无法确认 RustDesk Yan 的稳定签名身份：${code_requirement:-未返回 designated requirement}"
+        ;;
+esac
 
 if [ "$reset_permissions" = "1" ]; then
     say "- 按要求清除旧的权限记录..."

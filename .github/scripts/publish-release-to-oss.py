@@ -7,6 +7,7 @@ import json
 import os
 import re
 import subprocess
+import sys
 import time
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor
@@ -67,11 +68,29 @@ def validate_release_identity(metadata, tag):
         raise PublishError("Release tag date/sequence does not match version.json build_seq")
 
 
-def resolve_release_assets(directory, version):
+def resolve_release_assets(directory, version, snapshot=None):
     directory = Path(directory)
     files = sorted(
-        path for path in directory.iterdir() if path.is_file() and path.name != "SHA256SUMS"
+        path
+        for path in directory.iterdir()
+        if path.is_file() and path.name not in ("SHA256SUMS", "release-snapshot.json")
     )
+    if snapshot and snapshot.get("targets"):
+        resolved = {}
+        for target_key, target in snapshot["targets"].items():
+            path = directory / str(target.get("name") or "")
+            if not path.is_file():
+                raise PublishError(f"Missing release asset for {target_key}")
+            resolved[target_key] = path
+        if set(resolved) != {
+            f"{base_key}-{edition}"
+            for edition in ("standard", "sos")
+            for base_key in TARGET_SUFFIXES
+        }:
+            raise PublishError("Release snapshot must contain exactly 8 target keys")
+        if set(files) != set(resolved.values()):
+            raise PublishError("Release snapshot files do not match target metadata")
+        return resolved
     resolved = {}
     for edition in ("standard", "sos"):
         for base_key, suffixes in TARGET_SUFFIXES.items():
@@ -86,6 +105,25 @@ def resolve_release_assets(directory, version):
         all_files = sorted(path.name for path in directory.iterdir() if path.is_file())
         raise PublishError(f"Expected exactly 8 release assets, found {all_files}")
     return resolved
+
+
+def load_release_snapshot(directory, metadata, tag):
+    path = Path(directory) / "release-snapshot.json"
+    if not path.is_file():
+        return {
+            "schema": 1,
+            "tag": tag,
+            "catalog_revision": metadata["build_seq"],
+            "targets": {},
+        }
+    snapshot = json.loads(path.read_text())
+    if snapshot.get("schema") != 1 or snapshot.get("tag") != tag:
+        raise PublishError("Release snapshot identity is invalid")
+    if snapshot.get("catalog_revision") != metadata["build_seq"]:
+        raise PublishError("Release snapshot catalog revision is invalid")
+    if not isinstance(snapshot.get("targets"), dict):
+        raise PublishError("Release snapshot targets are invalid")
+    return snapshot
 
 
 def load_release_metadata(source_dir):
@@ -136,11 +174,115 @@ def signature_payload(metadata, target_key, size, sha256):
     ).encode()
 
 
+def transfer_release_assets(current, inherited, upload, copy, destination_prefix):
+    for target_key, path in current.items():
+        upload(destination_prefix + path.name, path)
+    for target_key, target in inherited.items():
+        if target.get("copy_source_verified"):
+            copy(target["source_key"], destination_prefix + target["name"])
+        else:
+            upload(destination_prefix + target["name"], target["path"])
+
+
+def cleanup_release_prefix(bucket, list_keys, release_prefix):
+    for key in list(list_keys(release_prefix)):
+        bucket.delete_object(key)
+
+
+def reuse_complete_release_assets(catalog, resolved, expected_releases, verify_signature):
+    if catalog.get("schema") != 2 or not isinstance(catalog.get("assets"), list):
+        raise PublishError("Existing complete release catalog cannot be safely reused")
+    uploaded = {}
+    for asset in catalog["assets"]:
+        target_key = asset.get("target_key") if isinstance(asset, dict) else None
+        if not isinstance(target_key, str) or target_key in uploaded:
+            raise PublishError("Existing complete release target identity is invalid")
+        uploaded[target_key] = asset
+    if set(uploaded) != set(resolved):
+        raise PublishError("Existing complete release target set differs from local assets")
+    for target_key, path in resolved.items():
+        asset = uploaded[target_key]
+        size = path.stat().st_size
+        sha256 = hashlib.sha256(path.read_bytes()).hexdigest()
+        release = asset.get("release")
+        if (
+            asset.get("name") != path.name
+            or asset.get("size") != size
+            or str(asset.get("sha256") or "").lower() != sha256
+            or not isinstance(asset.get("signature"), str)
+            or release != expected_releases.get(target_key)
+        ):
+            raise PublishError(f"Existing complete release differs from local asset: {target_key}")
+        try:
+            verify_signature(release, target_key, size, sha256, asset["signature"])
+        except Exception as exc:
+            raise PublishError(
+                f"Existing complete release signature is invalid: {target_key}"
+            ) from exc
+    return uploaded
+
+
+def prepare_uploaded_assets(
+    existing_catalog,
+    resolved,
+    publish_asset,
+    expected_releases,
+    verify_signature,
+):
+    if existing_catalog is not None:
+        return reuse_complete_release_assets(
+            existing_catalog,
+            resolved,
+            expected_releases,
+            verify_signature,
+        )
+    with ThreadPoolExecutor(max_workers=4) as executor:
+        return dict(executor.map(publish_asset, resolved.items()))
+
+
+def failed_release_cleanup_allowed(
+    http,
+    stable_manifest_url,
+    download_base,
+    release_prefix,
+    prefix_preexisted_complete=False,
+):
+    if prefix_preexisted_complete:
+        return False
+    try:
+        active_manifest = http.get_json(stable_manifest_url)
+        targets = active_manifest.get("targets")
+        if not isinstance(targets, dict) or not targets:
+            raise PublishError("Active manifest targets are missing")
+        active_prefix = f'{download_base.rstrip("/")}/{release_prefix.lstrip("/")}'
+        for target in targets.values():
+            if not isinstance(target, dict) or not isinstance(target.get("primary"), str):
+                raise PublishError("Active manifest target primary is invalid")
+            if target["primary"].startswith(active_prefix):
+                return False
+        return True
+    except Exception as status_error:
+        print(
+            f"Skipped OSS cleanup because active manifest status is unknown: {status_error}",
+            file=sys.stderr,
+        )
+        return False
+
+
 def build_manifest(metadata, uploaded, repository, tag, download_base):
     targets = {}
     for target_key, asset in uploaded.items():
         name = asset["name"]
+        release = asset.get("release") or {
+            **metadata,
+            "source_tag": tag,
+        }
         targets[target_key] = {
+            "version": release["version"],
+            "build_number": release["build_number"],
+            "build_seq": release["build_seq"],
+            "source_commit": release["source_commit"],
+            "source_tag": release["source_tag"],
             "primary": f'{download_base.rstrip("/")}/{asset["key"]}',
             "mirrors": [f"https://github.com/{repository}/releases/download/{tag}/{name}"],
             "size": asset["size"],
@@ -149,6 +291,8 @@ def build_manifest(metadata, uploaded, repository, tag, download_base):
             "signature_key_id": SIGNATURE_KEY_ID,
         }
     return {
+        "schema": 2,
+        "catalog_revision": metadata["build_seq"],
         "version": metadata["version"],
         "build_number": metadata["build_number"],
         "build_seq": metadata["build_seq"],
@@ -200,6 +344,8 @@ def probe_with_retry(http, url, attempts, retry_delay):
 
 def verify_published_manifest(expected, actual):
     fields = (
+        "schema",
+        "catalog_revision",
         "version",
         "build_number",
         "build_seq",
@@ -257,11 +403,11 @@ def valid_complete_catalog(bucket, catalog_key, object_keys, prefix, tag):
     assets = catalog.get("assets")
     release_prefix = f"{prefix}/{tag}/"
     if (
-        catalog.get("schema") != 1
+        catalog.get("schema") not in (1, 2)
         or catalog.get("tag") != tag
         or not isinstance(catalog.get("published_at"), int)
         or not isinstance(assets, list)
-        or len(assets) not in (8, 10)
+        or len(assets) != 8
     ):
         return None
     asset_keys = set()
@@ -286,6 +432,19 @@ def valid_complete_catalog(bucket, catalog_key, object_keys, prefix, tag):
     if len(asset_keys) != len(assets) or not asset_keys.issubset(object_keys):
         return None
     return catalog
+
+
+def complete_release_catalog(bucket, list_keys, prefix, tag):
+    release_prefix = f"{prefix}/{tag}/"
+    object_keys = set(list_keys(release_prefix))
+    catalog_key = release_prefix + "catalog.json"
+    if catalog_key not in object_keys:
+        return None
+    return valid_complete_catalog(bucket, catalog_key, object_keys, prefix, tag)
+
+
+def release_prefix_is_complete(bucket, list_keys, prefix, tag):
+    return complete_release_catalog(bucket, list_keys, prefix, tag) is not None
 
 
 def cleanup_complete_releases(bucket, list_keys, prefix, retain):
@@ -350,7 +509,8 @@ def main():
     signing_key = SigningKey(base64.b64decode(required_env("UPDATE_SIGNING_KEY"), validate=True))
     metadata = load_release_metadata(args.source_dir)
     validate_release_identity(metadata, args.tag)
-    resolved = resolve_release_assets(args.assets_dir, metadata["version"])
+    snapshot = load_release_snapshot(args.assets_dir, metadata, args.tag)
+    resolved = resolve_release_assets(args.assets_dir, metadata["version"], snapshot)
     auth = oss2.Auth(key_id, key_secret)
     bucket = oss2.Bucket(
         auth,
@@ -359,27 +519,60 @@ def main():
         connect_timeout=OSS_CONNECT_TIMEOUT_SECONDS,
     )
     release_prefix = f"{args.prefix}/{args.tag}/"
+    expected_releases = {}
+    for target_key in resolved:
+        snapshot_target = snapshot["targets"].get(target_key, {})
+        expected_releases[target_key] = {
+            field: snapshot_target.get(field, metadata[field])
+            for field in ("version", "build_number", "build_seq", "source_commit")
+        }
+        expected_releases[target_key]["source_tag"] = snapshot_target.get(
+            "source_tag", args.tag
+        )
 
-    def upload_asset(item):
+    def verify_existing_signature(release, target_key, size, sha256, signature):
+        signature_bytes = base64.b64decode(signature, validate=True)
+        payload = signature_payload(
+            release | {"product": metadata["product"], "channel": metadata["channel"]},
+            target_key,
+            size,
+            sha256,
+        )
+        signing_key.verify_key.verify(payload, signature_bytes)
+
+    def list_keys(object_prefix):
+        return (obj.key for obj in oss2.ObjectIterator(bucket, prefix=object_prefix))
+
+    def publish_asset(item):
         target_key, path = item
         data = path.read_bytes()
         size = path.stat().st_size
         sha256 = hashlib.sha256(data).hexdigest()
         object_key = release_prefix + path.name
+        snapshot_target = snapshot["targets"].get(target_key, {})
+        release = expected_releases[target_key]
         upload_bucket = oss2.Bucket(
             auth,
             f"https://{args.endpoint}",
             args.bucket,
             connect_timeout=OSS_CONNECT_TIMEOUT_SECONDS,
         )
-        oss2.resumable_upload(
-            upload_bucket,
-            object_key,
-            str(path),
-            multipart_threshold=10 * 1024 * 1024,
-            part_size=10 * 1024 * 1024,
-            num_threads=1,
-        )
+        if snapshot_target.get("current", True) or not snapshot_target.get(
+            "copy_source_verified", False
+        ):
+            oss2.resumable_upload(
+                upload_bucket,
+                object_key,
+                str(path),
+                multipart_threshold=10 * 1024 * 1024,
+                part_size=10 * 1024 * 1024,
+                num_threads=1,
+            )
+        else:
+            source_key = snapshot_target.get("source_key", "")
+            if not source_key:
+                raise PublishError(f"Inherited OSS source key is missing for {target_key}")
+            upload_bucket.copy_object(args.bucket, source_key, object_key)
         uploaded = upload_bucket.head_object(object_key)
         if uploaded.content_length != path.stat().st_size:
             raise PublishError(f"OSS size mismatch for {object_key}")
@@ -389,26 +582,44 @@ def main():
             "size": size,
             "sha256": sha256,
             "signature": base64.b64encode(
-                signing_key.sign(signature_payload(metadata, target_key, size, sha256)).signature
+                signing_key.sign(signature_payload(release | {
+                    "product": metadata["product"],
+                    "channel": metadata["channel"],
+                }, target_key, size, sha256)).signature
             ).decode(),
+            "release": release,
         }
 
+    prefix_preexisted_complete = None
     try:
-        with ThreadPoolExecutor(max_workers=4) as executor:
-            uploaded = dict(executor.map(upload_asset, resolved.items()))
+        existing_catalog = complete_release_catalog(
+            bucket,
+            list_keys,
+            args.prefix,
+            args.tag,
+        )
+        prefix_preexisted_complete = existing_catalog is not None
+        uploaded = prepare_uploaded_assets(
+            existing_catalog,
+            resolved,
+            publish_asset,
+            expected_releases,
+            verify_existing_signature,
+        )
         catalog = {
-            "schema": 1,
+            "schema": 2,
             "tag": args.tag,
             "build_seq": metadata["build_seq"],
             "published_at": int(time.time()),
             "download_base": args.download_base.rstrip("/") + "/",
-            "assets": [uploaded[key] for key in sorted(uploaded)],
+            "assets": [dict(uploaded[key], target_key=key) for key in sorted(uploaded)],
         }
-        catalog_key = release_prefix + "catalog.json"
-        catalog_body = json.dumps(catalog, ensure_ascii=False, separators=(",", ":")).encode()
-        bucket.put_object(catalog_key, catalog_body)
-        if bucket.head_object(catalog_key).content_length != len(catalog_body):
-            raise PublishError(f"OSS size mismatch for {catalog_key}")
+        if existing_catalog is None:
+            catalog_key = release_prefix + "catalog.json"
+            catalog_body = json.dumps(catalog, ensure_ascii=False, separators=(",", ":")).encode()
+            bucket.put_object(catalog_key, catalog_body)
+            if bucket.head_object(catalog_key).content_length != len(catalog_body):
+                raise PublishError(f"OSS size mismatch for {catalog_key}")
         manifest = build_manifest(metadata, uploaded, args.repository, args.tag, args.download_base)
         publish_and_verify_manifest(
             UrlHttpClient(),
@@ -418,20 +629,37 @@ def main():
             args.stable_manifest_url,
         )
 
-        def list_keys(object_prefix):
-            return (obj.key for obj in oss2.ObjectIterator(bucket, prefix=object_prefix))
-
         retained = cleanup_complete_releases(bucket, list_keys, args.prefix, 5)
         print(json.dumps({"tag": args.tag, "uploaded": len(uploaded), "retained": retained}))
-    except AccessDenied as exc:
-        details = getattr(exc, "details", {})
-        request_id = getattr(exc, "request_id", None) or details.get("RequestId", "unknown")
-        raise PublishError(
-            "OSS access denied. Grant the configured RAM identity "
-            f"oss:PutObject/oss:GetObject/oss:DeleteObject on "
-            f"acs:oss:*:*:{args.bucket}/{args.prefix}/* and oss:ListObjects on "
-            f"acs:oss:*:*:{args.bucket}; request-id={request_id}"
-        ) from exc
+    except Exception as exc:
+        cleanup_allowed = prefix_preexisted_complete is False and failed_release_cleanup_allowed(
+            UrlHttpClient(),
+            args.stable_manifest_url,
+            args.download_base,
+            release_prefix,
+            prefix_preexisted_complete,
+        )
+        if cleanup_allowed:
+            try:
+                cleanup_release_prefix(
+                    bucket,
+                    lambda object_prefix: (
+                        obj.key for obj in oss2.ObjectIterator(bucket, prefix=object_prefix)
+                    ),
+                    release_prefix,
+                )
+            except Exception as cleanup_error:
+                print(f"Failed to clean incomplete OSS release: {cleanup_error}", file=sys.stderr)
+        if isinstance(exc, AccessDenied):
+            details = getattr(exc, "details", {})
+            request_id = getattr(exc, "request_id", None) or details.get("RequestId", "unknown")
+            raise PublishError(
+                "OSS access denied. Grant the configured RAM identity "
+                f"oss:PutObject/oss:GetObject/oss:DeleteObject on "
+                f"acs:oss:*:*:{args.bucket}/{args.prefix}/* and oss:ListObjects on "
+                f"acs:oss:*:*:{args.bucket}; request-id={request_id}"
+            ) from exc
+        raise
 
 
 if __name__ == "__main__":

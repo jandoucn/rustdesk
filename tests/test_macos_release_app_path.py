@@ -39,6 +39,7 @@ def macos_rename_script() -> str:
     )
     return (
         script.replace("${{ env.VERSION }}", "1.5.0")
+        .replace("${{ env.BUILD_SEQ }}", "2026100202")
         .replace("${{ env.EDITION }}", "custom")
         .replace("${{ matrix.job.arch }}", "aarch64")
     )
@@ -72,15 +73,15 @@ class MacosReleaseAppPathTest(unittest.TestCase):
         self.assertNotIn('EDITION: "custom"', workflow)
         self.assertNotIn("body_path: release-notes.zh.md", workflow)
         self.assertIn(
-            "rustdesk-${{ env.VERSION }}-${{ env.EDITION }}-windows-",
+            "rustdesk-${{ env.VERSION }}-${{ env.BUILD_SEQ }}-${{ env.EDITION }}-windows-",
             workflow,
         )
         self.assertIn(
-            "rustdesk-${{ env.VERSION }}-${{ env.EDITION }}-android-",
+            "rustdesk-${{ env.VERSION }}-${{ env.BUILD_SEQ }}-${{ env.EDITION }}-android-",
             workflow,
         )
         self.assertIn(
-            "rustdesk-${{ env.VERSION }}-${{ env.EDITION }}-macos",
+            "rustdesk-${{ env.VERSION }}-${{ env.BUILD_SEQ }}-${{ env.EDITION }}-macos",
             workflow,
         )
         self.assertIn(
@@ -119,7 +120,7 @@ class MacosReleaseAppPathTest(unittest.TestCase):
 
     def test_unsigned_dmg_with_arch_suffix_does_not_require_rename(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
-            dmg = Path(temp_dir) / "rustdesk-1.5.0-custom-aarch64.dmg"
+            dmg = Path(temp_dir) / "rustdesk-1.5.0-2026100202-custom-aarch64.dmg"
             dmg.touch()
 
             subprocess.run(
@@ -132,8 +133,8 @@ class MacosReleaseAppPathTest(unittest.TestCase):
 
     def test_signed_dmg_is_renamed_with_arch_suffix(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
-            source = Path(temp_dir) / "rustdesk-1.5.0-custom-macos.dmg"
-            target = Path(temp_dir) / "rustdesk-1.5.0-custom-macos-aarch64.dmg"
+            source = Path(temp_dir) / "rustdesk-1.5.0-2026100202-custom-macos.dmg"
+            target = Path(temp_dir) / "rustdesk-1.5.0-2026100202-custom-macos-aarch64.dmg"
             source.touch()
 
             subprocess.run(

@@ -15,10 +15,10 @@ use base::{
         policy_resume_revision, should_run_scheduled_update, should_run_startup_update,
         try_update_sources, update_client_identity, update_option_enabled,
         update_policy_stream_url, update_signature_payload, update_target_key,
-        validate_manifest_contract, validate_target_metadata, PendingUpdateEvent, PolicyDecision,
-        ProcessedUpdateCommands, UpdateAction, UpdateCommand, UpdateCommandAction,
-        UpdateCommandDecision, UpdateCommandState, UpdatePolicy, UpdateSource, UpdateStreamEvent,
-        DEFAULT_SCHEDULED_UPDATE_INTERVAL_HOURS,
+        update_target_release, validate_manifest_contract, validate_target_metadata,
+        PendingUpdateEvent, PolicyDecision, ProcessedUpdateCommands, UpdateAction, UpdateCommand,
+        UpdateCommandAction, UpdateCommandDecision, UpdateCommandState, UpdatePolicy, UpdateSource,
+        UpdateStreamEvent, DEFAULT_SCHEDULED_UPDATE_INTERVAL_HOURS,
     },
 };
 use hbb_common::base64::{
@@ -1174,6 +1174,10 @@ fn check_update_request(
         crate::CHANNEL,
         &target_key,
     )?;
+    let target = manifest.targets.get(&target_key).cloned().ok_or_else(|| {
+        hbb_common::anyhow::anyhow!("signed manifest is missing the selected update target")
+    })?;
+    let (target_version, target_build_seq, _) = update_target_release(manifest, &target)?;
     if let Some(command) = command.filter(|value| value.action == UpdateCommandAction::Install) {
         let command_version = command.target_version.as_deref().ok_or_else(|| {
             hbb_common::anyhow::anyhow!("install command target version is missing")
@@ -1184,16 +1188,12 @@ fn check_update_request(
         if !update_command_matches_target(
             command_version,
             command_build_seq,
-            &manifest.version,
-            manifest.build_seq,
+            target_version,
+            target_build_seq,
         ) {
             bail!("update command target does not match signed manifest");
         }
     }
-    let target = manifest.targets.get(&target_key).cloned();
-    let Some(target) = target else {
-        bail!("signed manifest is missing the selected update target");
-    };
     let mut action = decide_update_action(
         &response,
         update_option_enabled(&config::Config::get_option(keys::OPTION_ALLOW_AUTO_UPDATE)),
@@ -1215,46 +1215,31 @@ fn check_update_request(
         });
     }
     let should_install = action == UpdateAction::AutoInstall;
-    let version = manifest.version.as_str();
-    report_update_event(
-        "started",
-        manifest.version.as_str(),
-        manifest.build_seq,
-        "none",
-    );
+    let version = target_version;
+    report_update_event("started", version, target_build_seq, "none");
     let (file_path, source) = match download_verified_target(manifest, &target_key, &target) {
         Ok(downloaded) => downloaded,
         Err(err) => {
-            report_update_event(
-                "failed",
-                manifest.version.as_str(),
-                manifest.build_seq,
-                "none",
-            );
+            report_update_event("failed", version, target_build_seq, "none");
             report_command_update_event(command, "failed", "all_sources_failed");
             return Err(err);
         }
     };
     let source = source.as_str();
-    report_update_event(
-        "downloaded",
-        manifest.version.as_str(),
-        manifest.build_seq,
-        source,
-    );
+    report_update_event("downloaded", version, target_build_seq, source);
     report_command_update_event(command, "downloaded", "");
     {
         #[cfg(target_os = "windows")]
         log::debug!("New version available: {}", version);
         // Recheck because a session can start while the verified asset is downloading.
         if should_install && has_no_active_conns() {
-            report_update_event("installing", version, manifest.build_seq, source);
+            report_update_event("installing", version, target_build_seq, source);
             report_command_update_event(command, "installing", "");
             #[cfg(target_os = "windows")]
             update_new_version(
                 update_msi,
                 version,
-                manifest.build_seq,
+                target_build_seq,
                 source,
                 &file_path,
                 command.map(|value| value.command_id.as_str()),
@@ -1266,11 +1251,11 @@ fn check_update_request(
             #[cfg(target_os = "linux")]
             if let Err(err) = install_linux_appimage(&file_path) {
                 log::error!("Failed to install AppImage update: {}", err);
-                report_update_event("rolled_back", version, manifest.build_seq, source);
+                report_update_event("rolled_back", version, target_build_seq, source);
                 remove_download_artifact(&file_path);
                 return Err(err);
             } else {
-                report_update_event("installed", version, manifest.build_seq, source);
+                report_update_event("installed", version, target_build_seq, source);
                 remove_download_artifact(&file_path);
             }
             #[cfg(target_os = "macos")]
@@ -1280,7 +1265,7 @@ fn check_update_request(
                     from_version: crate::VERSION.to_owned(),
                     from_build_seq: crate::BUILD_SEQ,
                     version: version.to_owned(),
-                    build_seq: manifest.build_seq,
+                    build_seq: target_build_seq,
                     source: if source == UpdateSource::Mirror.as_str() {
                         UpdateSource::Mirror
                     } else {
@@ -1293,7 +1278,7 @@ fn check_update_request(
                     report_update_event(
                         classify_update_preinstall_failure(&err.to_string()),
                         version,
-                        manifest.build_seq,
+                        target_build_seq,
                         source,
                     );
                     remove_download_artifact(&file_path);
@@ -1305,7 +1290,7 @@ fn check_update_request(
                 bail!("downloaded update path is not valid UTF-8");
             }
         } else if should_install {
-            report_update_event("deferred", version, manifest.build_seq, source);
+            report_update_event("deferred", version, target_build_seq, source);
             remove_download_artifact(&file_path);
             return Ok(UpdateCommandRunOutcome::Deferred);
         }
@@ -2184,6 +2169,7 @@ pub fn check_update_as_root() -> ResultType<bool> {
     let Some(target) = target else {
         return Ok(false);
     };
+    let (target_version, target_build_seq, _) = update_target_release(manifest, &target)?;
     let action = decide_update_action(
         &response,
         update_option_enabled(&config::Config::get_option(keys::OPTION_ALLOW_AUTO_UPDATE)),
@@ -2191,18 +2177,18 @@ pub fn check_update_as_root() -> ResultType<bool> {
     if action != UpdateAction::AutoInstall {
         return Ok(false);
     }
-    let version = manifest.version.clone();
-    report_update_event("started", &version, manifest.build_seq, "none");
+    let version = target_version.to_owned();
+    report_update_event("started", &version, target_build_seq, "none");
     let (file_path, source) = match download_verified_target(manifest, &target_key, &target) {
         Ok(downloaded) => downloaded,
         Err(err) => {
-            report_update_event("failed", &version, manifest.build_seq, "none");
+            report_update_event("failed", &version, target_build_seq, "none");
             return Err(err);
         }
     };
     let _download_cleanup = DownloadArtifactCleanup(file_path.clone());
     let source = source.as_str();
-    report_update_event("downloaded", &version, manifest.build_seq, source);
+    report_update_event("downloaded", &version, target_build_seq, source);
     // Use mktemp so a local user cannot pre-create a predictable path and
     // permanently deny updates for a reused service PID.
     let private_tmp_output = std::process::Command::new("/usr/bin/mktemp")
@@ -2243,17 +2229,17 @@ pub fn check_update_as_root() -> ResultType<bool> {
                 e
             );
         }
-        report_update_event("deferred", &version, manifest.build_seq, source);
+        report_update_event("deferred", &version, target_build_seq, source);
         bail!("[root-update] Active session started during download, deferring update.");
     }
     // Install silently as root
-    report_update_event("installing", &version, manifest.build_seq, source);
+    report_update_event("installing", &version, target_build_seq, source);
     let event = PendingUpdateEvent {
         transaction_id: new_update_transaction_id(),
         from_version: crate::VERSION.to_owned(),
         from_build_seq: crate::BUILD_SEQ,
         version: version.clone(),
-        build_seq: manifest.build_seq,
+        build_seq: target_build_seq,
         source: if source == UpdateSource::Mirror.as_str() {
             UpdateSource::Mirror
         } else {
@@ -2276,7 +2262,7 @@ pub fn check_update_as_root() -> ResultType<bool> {
             report_update_event(
                 classify_update_preinstall_failure(&err.to_string()),
                 &version,
-                manifest.build_seq,
+                target_build_seq,
                 source,
             );
             Err(err)

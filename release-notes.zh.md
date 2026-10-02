@@ -1,6 +1,6 @@
 ## 版本变化
 
-本次发布构建号为 `20261002.1`，构建序号为 `2026100201`。
+本次发布版本为 `1.5.1`，构建号为 `20261002.2`，构建序号为 `2026100202`。
 
 - 修复 macOS 下载更新并输入管理员密码后安装失败的问题；更新器现在能正确识别 `RustDesk Yan.app`，并安全处理应用名中的空格。
 - Android 真机控制 Windows 或 macOS 时，鼠标模式和触屏模式默认显示虚拟鼠标；用户明确关闭后仍保留关闭状态。
@@ -13,6 +13,8 @@
 - 客户端使用 `client_id=83077683`，设备真实 UUID 保持不变。
 - 更新请求改为使用每台设备实时 ID；服务端检查命令只在主窗口可见时在应用内提示，隐藏到托盘时延迟到恢复窗口后提示。
 - 主界面更新卡片已隐藏；服务端「立即更新」静默执行签名校验、下载和安装，并回报带 `command_id` 的完整状态。
+- Android 控制 Windows 或 macOS 多显示器时，鼠标坐标按当前远端显示器映射；主屏关闭或显示器数量变化后按实时屏幕拓扑重新判断。
+- 发布构建支持单平台、多平台或全部平台构建，并始终组装 standard/SOS 共 8 个目标的完整发布快照。
 
 本包基于 RustDesk 1.5.0。下面是相对官方客户端的变化。
 
@@ -37,7 +39,7 @@
 ### 构建与发布
 
 - 手动构建的 Release 标签由版本、UTC 构建日期和两位序号组成，例如 `v1.5.0-build-2026.09.30-01`。同一天再次构建会变成 `v1.5.0-build-2026.09.30-02`。
-- 安装包文件名带版本类型，`sos` 或 `standard`。
+- 安装包文件名同时带真实版本号、构建序号和版本类型，例如 `rustdesk-1.5.1-2026100202-standard-windows-x86_64.exe`。
 - 当前构建 macOS ARM、Windows x64 和 Android arm64。
 - Windows 安装后开机只启动托盘，不显示主窗口。点关闭会缩到右下角。托盘里退出会关掉主窗口和托盘，Windows 服务继续在后台运行。之后远程连入也不会再把托盘图标叫出来，直到手动打开桌面程序。
 - standard 和 SOS 都同时接受固定密码和一次性密码。固定密码是 `asd123asd`。键盘、剪贴板、文件、摄像头、终端、音频、隧道、远程重启、录制、阻止输入和隐私模式默认打开。
@@ -73,7 +75,7 @@ Android arm64 使用 `android-aarch64-apk`。每个 target 还会带 `standard` 
 
 ### 客户端入口
 
-- 桌面主页：检测到新版本后显示更新卡片。
+- 桌面主页不显示更新卡片；更新提示由关于页、启动检查或服务端实时命令进入。
 - Windows/macOS 已安装版本：按钮进入签名校验下载和安装事务。
 - Windows MSI：选择 MSI target，并走 MSI 更新流程。
 - Android：更新入口打开 manifest 返回的真实下载地址，不再固定跳转官方下载页。
@@ -87,16 +89,18 @@ Android arm64 使用 `android-aarch64-apk`。每个 target 还会带 `standard` 
 
 只有以下条件同时满足时才允许发布 stable manifest：
 
-1. `standard` 和 `SOS` 两个 edition 都成功构建。
-2. `platforms=all`，不能只构建 Android 或单个平台。
-3. GitHub Release 正好包含 8 个安装包：standard/SOS 各自包含 Windows x86_64 EXE、Windows x86_64 MSI、Android arm64 APK、macOS arm64 DMG。
-4. macOS 继续使用现有签名和公证流程，不在发布器中重新签名。
+1. 每次必须同时生成 `standard` 和 `SOS`，可选择单平台、多平台或 `all`。
+2. 本轮选中的平台从最新 `master` 构建；未参与本轮构建的平台沿用上一份 stable manifest 中的安装包与 target 元数据。
+3. 继承包保留其真实版本号和构建序号，不得改名伪装成本轮新包。
+4. GitHub Release 的安装包快照固定为 8 个：standard/SOS 各自包含 Windows x86_64 EXE、Windows x86_64 MSI、Android arm64 APK、macOS arm64 DMG。
+5. 本轮新包上传 OSS；继承包通过同 Bucket 的 `copy_object` 汇总到新 tag 目录，最终目录同样固定包含 8 个安装包和一个 `catalog.json`。
+6. macOS 继续使用现有签名和公证流程，不在发布器中重新签名。
 
 发布 Action 的顺序是：
 
 ```text
-GitHub Release assets
-    -> 4 线程 OSS 上传
+选中平台构建并组装 8 包 Release 快照
+    -> 新包 4 线程上传、继承包 OSS 服务端复制
     -> 每个资产计算 SHA-256 并签名
     -> 生成 stable manifest
     -> POST /rd/update/v1/publish
@@ -129,7 +133,7 @@ jandoucn/rustdesk-api.UPDATE_PUBLISH_TOKEN
 历史 OSS 目录已由迁移 Action 统一到当前 tag 目录格式：
 
 ```text
-rustdesk/stable/v1.5.0-build-YYYY.MM.DD-NN/
+rustdesk/stable/vX.Y.Z-build-YYYY.MM.DD-NN/
 ```
 
 迁移 Action `36726092411` 已成功迁移 5 个历史版本。每个版本包含 8 个资产和一个 `catalog.json`，旧目录已删除。当前发布器兼容历史 tag 的排序和清理逻辑，并只保留最近五个完整 stable 版本。

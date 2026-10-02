@@ -131,7 +131,7 @@ jobs:
     uses: ./.github/workflows/bridge.yml
 
   build-RustDeskTempTopMostWindow:
-    if: inputs.platforms == 'all'
+    if: inputs.platforms == 'all' || contains(format(',{0},', inputs.platforms), ',windows,')
     uses: ./.github/workflows/third-party-RustDeskTempTopMostWindow.yml
     strategy:
       fail-fast: false
@@ -150,7 +150,7 @@ jobs:
       target_version: Windows10
 
   build-for-windows-flutter:
-    if: inputs.platforms == 'all'
+    if: inputs.platforms == 'all' || contains(format(',{0},', inputs.platforms), ',windows,')
     name: ${{ matrix.job.target }}
     needs: [build-RustDeskTempTopMostWindow, generate-bridge]
     runs-on: ${{ matrix.job.os }}
@@ -416,7 +416,7 @@ jobs:
           python3 ./generate.py -f ../../rustdesk/ -o . -e ../../rustdesk/rustdesk.exe
           popd
           mkdir -p ./SignOutput
-          mv ./target/release/rustdesk-portable-packer.exe ./SignOutput/rustdesk-${{ env.VERSION }}-${{ env.EDITION }}-windows-${{ matrix.job.arch }}.exe
+          mv ./target/release/rustdesk-portable-packer.exe ./SignOutput/rustdesk-${{ env.VERSION }}-${{ env.BUILD_SEQ }}-${{ env.EDITION }}-windows-${{ matrix.job.arch }}.exe
 
       - name: Add MSBuild to PATH
         uses: microsoft/setup-msbuild@6fb02220983dee41ce7ae257b6f4d8f9bf5ed4ce # v2
@@ -439,7 +439,7 @@ jobs:
           $msiPlatform = if ('${{ matrix.job.arch }}' -eq 'aarch64') { 'ARM64' } else { 'x64' }
           msbuild msi.sln -p:Configuration=Release -p:Platform=$msiPlatform /p:TargetVersion=Windows10
           $msi = Get-ChildItem ./Package/bin/*/Release/en-us/Package.msi | Select-Object -First 1
-          mv $msi.FullName ../../SignOutput/rustdesk-${{ env.VERSION }}-${{ env.EDITION }}-windows-${{ matrix.job.arch }}.msi
+          mv $msi.FullName ../../SignOutput/rustdesk-${{ env.VERSION }}-${{ env.BUILD_SEQ }}-${{ env.EDITION }}-windows-${{ matrix.job.arch }}.msi
           sha256sum ../../SignOutput/rustdesk-*.msi
 
       - name: Build pre-built MSI template
@@ -801,7 +801,7 @@ jobs:
 
 
   build-for-macOS:
-    if: inputs.platforms == 'all'
+    if: inputs.platforms == 'all' || contains(format(',{0},', inputs.platforms), ',macos,')
     name: ${{ matrix.job.target }}
     runs-on: ${{ matrix.job.os }}
     needs: [generate-bridge]
@@ -973,13 +973,11 @@ jobs:
       - name: Sign copied service without hardened runtime
         if: env.MACOS_P12_BASE64 == null || env.MACOS_P12_BASE64 == ''
         run: |
-          # Xcode already ad-hoc signed the app with hardened runtime off.
-          # The copied service is unsigned. Sign that binary, then reseal the
-          # app without --options runtime so Gatekeeper still accepts xattr -cr.
           app="./flutter/build/macos/Build/Products/Release/RustDesk Yan.app"
-          codesign --force --sign - "$app/Contents/MacOS/service"
-          codesign --force --sign - "$app"
-          codesign --verify --deep --strict --verbose=2 "$app"
+          bash ./.github/scripts/sign-macos-app.sh \
+            "$app" \
+            "-" \
+            ./flutter/macos/Runner/Release.entitlements
           flags=$(codesign -d --verbose=4 \
             "$app" 2>&1 \
             | awk -F= '/^CodeDirectory /{print $0}')
@@ -994,14 +992,14 @@ jobs:
           CREATE_DMG="$(readlink -f "$CREATE_DMG")"
           sed -i -e 's/MAXIMUM_UNMOUNTING_ATTEMPTS=3/MAXIMUM_UNMOUNTING_ATTEMPTS=7/' "$CREATE_DMG"
           app="./flutter/build/macos/Build/Products/Release/RustDesk Yan.app"
-          create-dmg --icon "RustDesk Yan.app" 200 190 --hide-extension "RustDesk Yan.app" --window-size 800 400 --app-drop-link 600 185 rustdesk-${{ env.VERSION }}-${{ env.EDITION }}-${{ matrix.job.arch }}.dmg "$app"
+          create-dmg --icon "RustDesk Yan.app" 200 190 --hide-extension "RustDesk Yan.app" --window-size 800 400 --app-drop-link 600 185 rustdesk-${{ env.VERSION }}-${{ env.BUILD_SEQ }}-${{ env.EDITION }}-${{ matrix.job.arch }}.dmg "$app"
 
       - name: Upload unsigned macOS app
         if: env.UPLOAD_ARTIFACT == 'true' && (env.MACOS_P12_BASE64 == null || env.MACOS_P12_BASE64 == '')
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: rustdesk-unsigned-macos-${{ matrix.job.arch }}
-          path: rustdesk-${{ env.VERSION }}-${{ env.EDITION }}-${{ matrix.job.arch }}.dmg # can not upload the directory directly or tar.gz, which destroy the link structure, causing the codesign failed
+          path: rustdesk-${{ env.VERSION }}-${{ env.BUILD_SEQ }}-${{ env.EDITION }}-${{ matrix.job.arch }}.dmg # can not upload the directory directly or tar.gz, which destroy the link structure, causing the codesign failed
 
       - name: Codesign app and create signed dmg
         if: env.MACOS_P12_BASE64 != null && env.UPLOAD_ARTIFACT == 'true'
@@ -1021,15 +1019,15 @@ jobs:
             "$app" \
             ${{ secrets.MACOS_CODESIGN_IDENTITY }} \
             ./flutter/macos/Runner/Release.entitlements
-          create-dmg --icon "RustDesk Yan.app" 200 190 --hide-extension "RustDesk Yan.app" --window-size 800 400 --app-drop-link 600 185 rustdesk-${{ env.VERSION }}-${{ env.EDITION }}-macos.dmg "$app"
-          codesign --force --options runtime -s ${{ secrets.MACOS_CODESIGN_IDENTITY }} --deep --strict rustdesk-${{ env.VERSION }}-${{ env.EDITION }}-macos.dmg -vvv
+          create-dmg --icon "RustDesk Yan.app" 200 190 --hide-extension "RustDesk Yan.app" --window-size 800 400 --app-drop-link 600 185 rustdesk-${{ env.VERSION }}-${{ env.BUILD_SEQ }}-${{ env.EDITION }}-macos.dmg "$app"
+          codesign --force --options runtime -s ${{ secrets.MACOS_CODESIGN_IDENTITY }} --deep --strict rustdesk-${{ env.VERSION }}-${{ env.BUILD_SEQ }}-${{ env.EDITION }}-macos.dmg -vvv
           # notarize the rustdesk-${{ env.VERSION }}-${{ env.EDITION }}-macos.dmg
-          rcodesign notary-submit --api-key-path ${{ github.workspace }}/rustdesk.json  --staple rustdesk-${{ env.VERSION }}-${{ env.EDITION }}-macos.dmg
+          rcodesign notary-submit --api-key-path ${{ github.workspace }}/rustdesk.json  --staple rustdesk-${{ env.VERSION }}-${{ env.BUILD_SEQ }}-${{ env.EDITION }}-macos.dmg
 
       - name: Rename rustdesk
         if: env.UPLOAD_ARTIFACT == 'true'
         run: |
-          name=rustdesk-${{ env.VERSION }}-${{ env.EDITION }}-macos.dmg
+          name=rustdesk-${{ env.VERSION }}-${{ env.BUILD_SEQ }}-${{ env.EDITION }}-macos.dmg
           if [[ -f "$name" ]]; then
             mv "$name" "${name%%.dmg}-${{ matrix.job.arch }}.dmg"
           fi
@@ -1114,7 +1112,7 @@ jobs:
           files: rustdesk-${{ env.VERSION }}-${{ env.EDITION }}-unsigned.tar.gz
 
   build-rustdesk-android:
-    if: inputs.platforms == 'all' || inputs.platforms == 'android'
+    if: inputs.platforms == 'all' || contains(format(',{0},', inputs.platforms), ',android,')
     needs: [generate-bridge]
     name: build rustdesk android apk ${{ matrix.job.target }}
     runs-on: ${{ matrix.job.os }}
@@ -1312,7 +1310,7 @@ jobs:
               # build flutter
               pushd flutter
               flutter build apk "--${{ matrix.job.reltype }}" --target-platform android-arm64 --split-per-abi
-              mv build/app/outputs/flutter-apk/app-arm64-v8a-${{ matrix.job.reltype }}.apk ../rustdesk-${{ env.VERSION }}-${{ env.EDITION }}-android-${{ matrix.job.arch }}${{ matrix.job.suffix }}.apk
+              mv build/app/outputs/flutter-apk/app-arm64-v8a-${{ matrix.job.reltype }}.apk ../rustdesk-${{ env.VERSION }}-${{ env.BUILD_SEQ }}-${{ env.EDITION }}-android-${{ matrix.job.arch }}${{ matrix.job.suffix }}.apk
             ;;
             armv7-linux-androideabi)
               mkdir -p ./flutter/android/app/src/main/jniLibs/armeabi-v7a
@@ -1344,7 +1342,7 @@ jobs:
           esac
           popd
           mkdir -p signed-apk; pushd signed-apk
-          mv ../rustdesk-${{ env.VERSION }}-${{ env.EDITION }}-android-${{ matrix.job.arch }}${{ matrix.job.suffix }}.apk .
+          mv ../rustdesk-${{ env.VERSION }}-${{ env.BUILD_SEQ }}-${{ env.EDITION }}-android-${{ matrix.job.arch }}${{ matrix.job.suffix }}.apk .
 
       # https://github.com/r0adkll/sign-android-release/issues/84#issuecomment-1889636075
       - name: Setup sign tool version variable
@@ -1380,7 +1378,7 @@ jobs:
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: release-assets-${{ env.EDITION }}-android-${{ matrix.job.arch }}
-          path: signed-apk/rustdesk-${{ env.VERSION }}-${{ env.EDITION }}-android-${{ matrix.job.arch }}.apk
+          path: signed-apk/rustdesk-${{ env.VERSION }}-${{ env.BUILD_SEQ }}-${{ env.EDITION }}-android-${{ matrix.job.arch }}.apk
           if-no-files-found: error
 
       - name: Publish signed apk package
@@ -1401,7 +1399,7 @@ jobs:
           tag_name: ${{ env.TAG_NAME }}
           name: ${{ inputs.release-name != '' && inputs.release-name || env.TAG_NAME }}
           files: |
-            signed-apk/rustdesk-${{ env.VERSION }}-${{ env.EDITION }}-android-${{ matrix.job.arch }}.apk
+            signed-apk/rustdesk-${{ env.VERSION }}-${{ env.BUILD_SEQ }}-${{ env.EDITION }}-android-${{ matrix.job.arch }}.apk
 
   build-rustdesk-android-universal:
     needs: [build-rustdesk-android]

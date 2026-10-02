@@ -10,6 +10,92 @@ SCRIPT = REPO_ROOT / "macos-screen-permission.sh"
 
 
 class MacosScreenPermissionTest(unittest.TestCase):
+    def test_wizard_repairs_unstable_cdhash_identity_and_resets_stale_permissions(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            app = root / "RustDesk Yan.app"
+            executable = app / "Contents/MacOS/RustDesk Yan"
+            executable.parent.mkdir(parents=True)
+            executable.touch()
+            executable.chmod(0o755)
+
+            bin_dir = root / "bin"
+            bin_dir.mkdir()
+            log = root / "commands.log"
+            signature_state = root / "stable-signature"
+            self._write_command(bin_dir, "uname", 'echo "Darwin"')
+            self._write_command(bin_dir, "xattr", ":")
+            self._write_command(bin_dir, "osascript", 'echo "osascript $*" >> "$TEST_LOG"')
+            self._write_command(bin_dir, "pkill", 'echo "pkill $*" >> "$TEST_LOG"')
+            self._write_command(bin_dir, "pgrep", "exit 1")
+            self._write_command(bin_dir, "sleep", ":")
+            self._write_command(bin_dir, "tccutil", 'echo "tccutil $*" >> "$TEST_LOG"')
+            self._write_command(
+                bin_dir,
+                "codesign",
+                'echo "codesign $*" >> "$TEST_LOG"\n'
+                'case "$*" in\n'
+                '  *"-dr -"*)\n'
+                '    if [ -f "$TEST_SIGNATURE_STATE" ]; then\n'
+                '      echo \'designated => identifier "com.example.rustdesk"\' >&2\n'
+                '    else\n'
+                '      echo \'designated => cdhash H"0123456789abcdef"\' >&2\n'
+                '    fi\n'
+                '    ;;\n'
+                '  *"--requirements =designated => identifier"*) touch "$TEST_SIGNATURE_STATE" ;;\n'
+                "esac",
+            )
+            self._write_command(
+                bin_dir,
+                "open",
+                'echo "open $*" >> "$TEST_LOG"\n'
+                'case "$*" in\n'
+                '  *--check-macos-permissions*)\n'
+                '    for arg in "$@"; do\n'
+                '      case "$arg" in --macos-permission-output=*) output=${arg#*=} ;; esac\n'
+                '    done\n'
+                '    echo "screen_recording=true accessibility=true input_monitoring=true" > "$output"\n'
+                '    ;;\n'
+                'esac',
+            )
+
+            env = os.environ.copy()
+            env.update(
+                {
+                    "PATH": f"{bin_dir}:{env['PATH']}",
+                    "RUSTDESK_APP": str(app),
+                    "RUSTDESK_BUNDLE_ID": "com.example.rustdesk",
+                    "RUSTDESK_EXECUTABLE": str(executable),
+                    "RUSTDESK_OPEN_COMMAND": str(bin_dir / "open"),
+                    "TEST_LOG": str(log),
+                    "TEST_SIGNATURE_STATE": str(signature_state),
+                }
+            )
+            result = subprocess.run(
+                ["/bin/sh", str(SCRIPT)],
+                text=True,
+                capture_output=True,
+                encoding="utf-8",
+                errors="replace",
+                env=env,
+                timeout=10,
+            )
+
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertIn("已迁移为稳定签名身份", result.stdout)
+            commands = log.read_text(encoding="utf-8")
+            self.assertIn(
+                '--requirements =designated => identifier "com.example.rustdesk"',
+                commands,
+            )
+            self.assertIn(
+                f"--entitlements {REPO_ROOT / 'flutter/macos/Runner/Release.entitlements'}",
+                commands,
+            )
+            self.assertIn("tccutil reset ScreenCapture com.example.rustdesk", commands)
+            self.assertIn("tccutil reset Accessibility com.example.rustdesk", commands)
+            self.assertIn("tccutil reset ListenEvent com.example.rustdesk", commands)
+
     def test_wizard_clears_quarantine_and_verifies_each_permission(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
@@ -30,7 +116,14 @@ class MacosScreenPermissionTest(unittest.TestCase):
             self._write_command(bin_dir, "osascript", 'echo "osascript $*" >> "$TEST_LOG"')
             self._write_command(bin_dir, "pkill", 'echo "pkill $*" >> "$TEST_LOG"')
             self._write_command(bin_dir, "pgrep", "exit 1")
-            self._write_command(bin_dir, "codesign", 'echo "codesign $*" >> "$TEST_LOG"')
+            self._write_command(
+                bin_dir,
+                "codesign",
+                'echo "codesign $*" >> "$TEST_LOG"\n'
+                'case "$*" in\n'
+                '  *"-dr -"*) echo \'designated => identifier "com.example.rustdesk"\' >&2 ;;\n'
+                "esac",
+            )
             self._write_command(bin_dir, "sleep", ":")
             self._write_command(bin_dir, "uname", 'echo "Darwin"')
             self._write_command(

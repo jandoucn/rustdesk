@@ -12,11 +12,8 @@ on:
         type: boolean
         default: true
       platforms:
-        description: 构建平台，android 只出手机包
-        type: choice
-        options:
-          - all
-          - android
+        description: 构建平台：all 或 windows,macos,android 的任意逗号组合
+        type: string
         default: all
       tag:
         description: 自定义 tag，留空按统一版本源生成
@@ -43,8 +40,13 @@ jobs:
       - id: date
         env:
           CUSTOM_TAG: ${{ inputs.tag }}
+          PLATFORMS: ${{ inputs.platforms }}
         run: |
           set -euo pipefail
+          python3 .github/scripts/validate-release-selection.py \
+            "$PLATFORMS" \
+            "${{ inputs.standard }}" \
+            "${{ inputs.sos }}"
           version=$(python3 -c 'import json; print(json.load(open("version.json"))["version"])')
           build_number=$(python3 -c 'import json; print(json.load(open("version.json"))["build_number"])')
           build_seq=$(python3 -c 'import json; print(json.load(open("version.json"))["build_seq"])')
@@ -162,8 +164,19 @@ jobs:
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           pattern: release-assets-*
-          path: release-assets
+          path: current-assets
           merge-multiple: true
+
+      - name: 组装完整发布快照
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 .github/scripts/assemble-release-snapshot.py \
+            --current-assets current-assets \
+            --output release-assets \
+            --metadata version.json \
+            --tag "$RELEASE_TAG" \
+            --previous-manifest-url "https://rdapi.yan.life/rd/update/v1/manifest/stable.json"
 
       - name: 校验并发布 Release
         shell: bash
@@ -175,7 +188,7 @@ jobs:
           python3 .github/scripts/validate-release-assets.py release-assets --editions "$editions"
           (
             cd release-assets
-            find . -type f ! -name SHA256SUMS -print0 \
+            find . -type f ! -name SHA256SUMS ! -name release-snapshot.json -print0 \
               | sort -z \
               | xargs -0 sha256sum > SHA256SUMS
             sha256sum -c SHA256SUMS
@@ -201,7 +214,7 @@ jobs:
 
   publish-oss:
     needs: [release-tag, publish-release]
-    if: inputs.standard && inputs.sos && inputs.platforms == 'all'
+    if: inputs.standard && inputs.sos
     uses: ./.github/workflows/publish-oss.yml
     secrets: inherit
     with:

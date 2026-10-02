@@ -6,6 +6,12 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class ReleaseAndRemoteUiContractTest(unittest.TestCase):
+    def test_release_snapshot_requires_standard_and_sos_editions(self):
+        caller = (ROOT / ".github/workflows/flutter-tag.yml").read_text()
+        self.assertIn("validate-release-selection.py", caller)
+        validator = (ROOT / ".github/scripts/validate-release-selection.py").read_text()
+        self.assertIn("完整发布快照必须同时构建 standard 和 SOS", validator)
+
     def test_oss_publish_probes_the_requested_release_and_fails_closed(self):
         workflow = (ROOT / ".github/workflows/publish-oss.yml").read_text()
 
@@ -45,7 +51,8 @@ class ReleaseAndRemoteUiContractTest(unittest.TestCase):
         self.assertIn("fail-fast: true", caller)
         self.assertIn("group: flutter-tag-release", caller)
         self.assertIn("cancel-in-progress: false", caller)
-        self.assertIn("if: inputs.standard && inputs.sos && inputs.platforms == 'all'", caller)
+        self.assertIn("if: inputs.standard && inputs.sos", caller)
+        self.assertNotIn("inputs.platforms == 'all'", caller[caller.index("publish-oss:") :])
         self.assertIn("publish-release:", caller)
         self.assertIn("preflight:", caller)
         self.assertIn("flutter analyze", caller)
@@ -82,6 +89,8 @@ class ReleaseAndRemoteUiContractTest(unittest.TestCase):
         self.assertIn('VERSION: "${{ inputs.version }}"', build)
         self.assertIn('BUILD_NUMBER: "${{ inputs.build_number }}"', build)
         self.assertIn('BUILD_SEQ: "${{ inputs.build_seq }}"', build)
+        self.assertIn("assemble-release-snapshot.py", caller)
+        self.assertIn("release-snapshot.json", caller)
         self.assertIn("Smoke test built Windows client", build)
         self.assertIn("Get-Process -Name rustdesk", build)
         self.assertIn("Stop-Process -Force", build)

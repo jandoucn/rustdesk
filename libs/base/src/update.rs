@@ -976,17 +976,39 @@ pub fn update_target_key(platform: &str, arch: &str, kind: &str, edition: &str) 
     format!("{platform}-{arch}-{kind}-{edition}")
 }
 
+pub fn update_target_release<'a>(
+    manifest: &'a UpdateManifest,
+    target: &'a hbb_common::UpdateTarget,
+) -> anyhow::Result<(&'a str, u64, &'a str)> {
+    if manifest.schema >= 2 {
+        anyhow::ensure!(!target.version.is_empty(), "target version is missing");
+        anyhow::ensure!(target.build_seq > 0, "target build is missing");
+        anyhow::ensure!(
+            !target.source_commit.is_empty(),
+            "target source commit is missing"
+        );
+        Ok((&target.version, target.build_seq, &target.source_commit))
+    } else {
+        Ok((
+            &manifest.version,
+            manifest.build_seq,
+            &manifest.source_commit,
+        ))
+    }
+}
+
 pub fn update_signature_payload(
     manifest: &UpdateManifest,
     target_key: &str,
     target: &hbb_common::UpdateTarget,
 ) -> anyhow::Result<Vec<u8>> {
+    let (version, build_seq, source_commit) = update_target_release(manifest, target)?;
     for (name, value) in [
         ("product", manifest.product.as_str()),
         ("edition", manifest.edition.as_str()),
         ("channel", manifest.channel.as_str()),
-        ("version", manifest.version.as_str()),
-        ("source_commit", manifest.source_commit.as_str()),
+        ("version", version),
+        ("source_commit", source_commit),
         ("target_key", target_key),
         ("sha256", target.sha256.as_str()),
     ] {
@@ -1011,9 +1033,9 @@ pub fn update_signature_payload(
         manifest.product,
         manifest.edition,
         manifest.channel,
-        manifest.version,
-        manifest.build_seq,
-        manifest.source_commit,
+        version,
+        build_seq,
+        source_commit,
         target_key,
         target.size,
         target.sha256.to_ascii_lowercase(),
@@ -1118,12 +1140,17 @@ pub fn validate_manifest_contract(
         response.update_available,
         "response does not offer an update"
     );
+    let target = manifest
+        .targets
+        .get(target_key)
+        .ok_or_else(|| anyhow::anyhow!("target is missing"))?;
+    let (target_version, target_build_seq, _) = update_target_release(manifest, target)?;
     anyhow::ensure!(
-        manifest.version == response.target_version,
+        target_version == response.target_version,
         "target version mismatch"
     );
     anyhow::ensure!(
-        manifest.build_seq == response.target_build_seq,
+        target_build_seq == response.target_build_seq,
         "target build mismatch"
     );
     anyhow::ensure!(manifest.product == product, "product mismatch");
@@ -1134,16 +1161,12 @@ pub fn validate_manifest_contract(
     anyhow::ensure!(manifest.channel == channel, "channel mismatch");
     anyhow::ensure!(
         is_newer_version(
-            &manifest.version,
-            manifest.build_seq,
+            target_version,
+            target_build_seq,
             current_version,
             current_build_seq
         ),
         "manifest is not newer"
-    );
-    anyhow::ensure!(
-        manifest.targets.contains_key(target_key),
-        "target is missing"
     );
     Ok(())
 }
@@ -1372,6 +1395,90 @@ mod tests {
     }
 
     #[test]
+    fn schema_two_uses_selected_target_release_identity() {
+        let target_key = "windows-x86_64-exe-standard";
+        let target = UpdateTarget {
+            version: "1.5.0".to_owned(),
+            build_number: "20261001.7".to_owned(),
+            build_seq: 2026100107,
+            source_commit: "0123456789abcdef0123456789abcdef01234567".to_owned(),
+            source_tag: "v1.5.0-build-2026.10.01-07".to_owned(),
+            size: 42,
+            sha256: "AB".repeat(32),
+            ..Default::default()
+        };
+        let manifest = UpdateManifest {
+            schema: 2,
+            version: "1.5.0".to_owned(),
+            build_number: "20261002.1".to_owned(),
+            build_seq: 2026100201,
+            product: "rustdesk-yan".to_owned(),
+            edition: "multi".to_owned(),
+            channel: "stable".to_owned(),
+            source_commit: "fedcba9876543210fedcba9876543210fedcba98".to_owned(),
+            targets: HashMap::from([(target_key.to_owned(), target.clone())]),
+            ..Default::default()
+        };
+        let response = VersionCheckResponse {
+            update_available: true,
+            target_version: target.version.clone(),
+            target_build_seq: target.build_seq,
+            ..Default::default()
+        };
+
+        validate_manifest_contract(
+            &response,
+            &manifest,
+            "1.5.0",
+            2026100107,
+            "rustdesk-yan",
+            "standard",
+            "stable",
+            target_key,
+        )
+        .expect_err("an inherited desktop target must not become newer with the catalog");
+
+        let payload = update_signature_payload(&manifest, target_key, &target)
+            .expect("target metadata should serialize");
+        let payload = String::from_utf8(payload).expect("payload should be UTF-8");
+        assert!(payload.contains("version=1.5.0\nbuild_seq=2026100107\n"));
+        assert!(payload.contains(&format!("source_commit={}\n", target.source_commit)));
+        assert!(!payload.contains("build_seq=2026100201"));
+    }
+
+    #[test]
+    fn schema_one_falls_back_to_manifest_release_identity() {
+        let target_key = "windows-x86_64-exe-standard";
+        let manifest = UpdateManifest {
+            version: "1.5.0".to_owned(),
+            build_seq: 2026100107,
+            product: "rustdesk-yan".to_owned(),
+            edition: "multi".to_owned(),
+            channel: "stable".to_owned(),
+            targets: HashMap::from([(target_key.to_owned(), UpdateTarget::default())]),
+            ..Default::default()
+        };
+        let response = VersionCheckResponse {
+            update_available: true,
+            target_version: "1.5.0".to_owned(),
+            target_build_seq: 2026100107,
+            ..Default::default()
+        };
+
+        validate_manifest_contract(
+            &response,
+            &manifest,
+            "1.5.0",
+            2026100106,
+            "rustdesk-yan",
+            "standard",
+            "stable",
+            target_key,
+        )
+        .expect("legacy manifests must remain compatible");
+    }
+
+    #[test]
     fn signature_payload_rejects_line_break_injection() {
         let manifest = UpdateManifest {
             product: "rustdesk-yan\nchannel=beta".to_owned(),
@@ -1441,6 +1548,7 @@ mod tests {
             sha256: "a".repeat(64),
             signature: "c2lnbmF0dXJl".to_owned(),
             signature_key_id: "yan-release-2026".to_owned(),
+            ..Default::default()
         };
         assert!(validate_target_metadata(&valid, "yan-release-2026").is_ok());
 

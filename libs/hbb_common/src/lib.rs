@@ -589,6 +589,10 @@ pub struct VersionCheckResponse {
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
 pub struct UpdateManifest {
     #[serde(default)]
+    pub schema: u32,
+    #[serde(default)]
+    pub catalog_revision: u64,
+    #[serde(default)]
     pub version: String,
     #[serde(default)]
     pub build_number: String,
@@ -608,6 +612,16 @@ pub struct UpdateManifest {
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
 pub struct UpdateTarget {
+    #[serde(default)]
+    pub version: String,
+    #[serde(default)]
+    pub build_number: String,
+    #[serde(default)]
+    pub build_seq: u64,
+    #[serde(default)]
+    pub source_commit: String,
+    #[serde(default)]
+    pub source_tag: String,
     #[serde(default)]
     pub primary: String,
     #[serde(default)]

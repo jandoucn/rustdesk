@@ -1,3 +1,4 @@
+import json
 import unittest
 from pathlib import Path
 
@@ -6,6 +7,13 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class ReleaseMetadataPolicyTest(unittest.TestCase):
+    def test_next_catalog_snapshot_uses_new_semver_and_unique_build_sequence(self):
+        metadata = json.loads((ROOT / "version.json").read_text())
+
+        self.assertEqual(metadata["version"], "1.5.1")
+        self.assertEqual(metadata["build_number"], "20261002.2")
+        self.assertEqual(metadata["build_seq"], 2026100202)
+
     def test_release_metadata_stays_empty_and_uses_the_canonical_tag(self):
         agents = (ROOT / "AGENTS.md").read_text()
         caller = (ROOT / ".github/workflows/flutter-tag.yml").read_text()
@@ -32,6 +40,13 @@ class ReleaseMetadataPolicyTest(unittest.TestCase):
         )
         self.assertIn("`v1.5.0-build-2026.09.30-01`", release_notes)
         self.assertNotIn("`20260929-01`", release_notes)
+
+    def test_release_notes_document_partial_snapshot_inheritance(self):
+        release_notes = (ROOT / "release-notes.zh.md").read_text()
+
+        self.assertIn("支持单平台、多平台或全部平台构建", release_notes)
+        self.assertIn("未参与本轮构建的平台沿用上一份 stable manifest", release_notes)
+        self.assertIn("继承包保留其真实版本号和构建序号", release_notes)
 
 
 if __name__ == "__main__":

@@ -1,5 +1,6 @@
 import importlib.util
 import inspect
+import hashlib
 import json
 import subprocess
 import tempfile
@@ -48,6 +49,11 @@ class FakeBucket:
         self.deleted.append(key)
 
 
+class FakeObject:
+    def __init__(self, key):
+        self.key = key
+
+
 class FakeHttp:
     def __init__(self, published_manifest):
         self.published_manifest = published_manifest
@@ -62,6 +68,11 @@ class FakeHttp:
     def get_json(self, url):
         self.calls.append(("get", url))
         return self.published_manifest
+
+
+class FailingHttp:
+    def get_json(self, url):
+        raise OSError("manifest unavailable")
 
 
 class PublishReleaseToOssTest(unittest.TestCase):
@@ -173,6 +184,307 @@ class PublishReleaseToOssTest(unittest.TestCase):
         self.assertIn("ThreadPoolExecutor(max_workers=4)", source)
         self.assertIn("num_threads=1", source)
 
+    def test_failed_release_cleanup_deletes_only_the_current_prefix(self):
+        bucket = FakeBucket({}, [], {})
+        objects = [
+            FakeObject("rustdesk/stable/current/a.exe"),
+            FakeObject("rustdesk/stable/current/catalog.json"),
+            FakeObject("rustdesk/stable/previous/a.exe"),
+        ]
+
+        self.publisher.cleanup_release_prefix(
+            bucket,
+            lambda prefix: (obj.key for obj in objects if obj.key.startswith(prefix)),
+            "rustdesk/stable/current/",
+        )
+
+        self.assertEqual(
+            bucket.deleted,
+            [
+                "rustdesk/stable/current/a.exe",
+                "rustdesk/stable/current/catalog.json",
+            ],
+        )
+
+    def test_publish_failure_checks_active_manifest_before_cleanup(self):
+        source = inspect.getsource(self.publisher.main)
+
+        self.assertLess(
+            source.index("failed_release_cleanup_allowed("),
+            source.index("cleanup_release_prefix("),
+        )
+
+    def test_failed_publish_does_not_delete_active_release_prefix(self):
+        active_manifest = {
+            "targets": {
+                "windows-x86_64-exe-standard": {
+                    "primary": "https://download.yan.life/rustdesk/stable/current/app.exe"
+                }
+            }
+        }
+
+        allowed = self.publisher.failed_release_cleanup_allowed(
+            FakeHttp(active_manifest),
+            "https://rdapi.yan.life/rd/update/v1/manifest/stable.json",
+            "https://download.yan.life",
+            "rustdesk/stable/current/",
+        )
+
+        self.assertFalse(allowed)
+
+    def test_failed_publish_deletes_prefix_only_when_active_release_differs(self):
+        active_manifest = {
+            "targets": {
+                "windows-x86_64-exe-standard": {
+                    "primary": "https://download.yan.life/rustdesk/stable/previous/app.exe"
+                }
+            }
+        }
+
+        allowed = self.publisher.failed_release_cleanup_allowed(
+            FakeHttp(active_manifest),
+            "https://rdapi.yan.life/rd/update/v1/manifest/stable.json",
+            "https://download.yan.life",
+            "rustdesk/stable/current/",
+        )
+
+        self.assertTrue(allowed)
+
+    def test_failed_publish_keeps_prefix_when_active_manifest_is_unknown(self):
+        allowed = self.publisher.failed_release_cleanup_allowed(
+            FailingHttp(),
+            "https://rdapi.yan.life/rd/update/v1/manifest/stable.json",
+            "https://download.yan.life",
+            "rustdesk/stable/current/",
+        )
+
+        self.assertFalse(allowed)
+
+    def test_failed_rerun_preserves_preexisting_complete_historical_release(self):
+        prefix = "rustdesk/stable"
+        tag = "v1.5.0-build-2026.09.30-05"
+        release_prefix = f"{prefix}/{tag}/"
+        catalog_key = f"{release_prefix}catalog.json"
+        assets = [
+            {
+                "name": f"asset-{index}",
+                "key": f"{release_prefix}asset-{index}",
+                "size": index + 1,
+                "sha256": f"{index:064x}",
+                "signature": "signature",
+            }
+            for index in range(8)
+        ]
+        body = json.dumps(
+            {
+                "schema": 2,
+                "tag": tag,
+                "build_seq": 2026093005,
+                "published_at": 1,
+                "assets": assets,
+            }
+        ).encode()
+        keys = [catalog_key, *(asset["key"] for asset in assets)]
+        sizes = {
+            catalog_key: len(body),
+            **{asset["key"]: asset["size"] for asset in assets},
+        }
+        bucket = FakeBucket({catalog_key: body}, keys, sizes)
+        active_manifest = {
+            "targets": {
+                "windows-x86_64-exe-standard": {
+                    "primary": "https://download.yan.life/rustdesk/stable/newer/app.exe"
+                }
+            }
+        }
+
+        preexisted_complete = self.publisher.release_prefix_is_complete(
+            bucket,
+            lambda object_prefix: (key for key in keys if key.startswith(object_prefix)),
+            prefix,
+            tag,
+        )
+        allowed = self.publisher.failed_release_cleanup_allowed(
+            FakeHttp(active_manifest),
+            "https://rdapi.yan.life/rd/update/v1/manifest/stable.json",
+            "https://download.yan.life",
+            release_prefix,
+            preexisted_complete,
+        )
+        if allowed:
+            self.publisher.cleanup_release_prefix(
+                bucket,
+                lambda object_prefix: (key for key in keys if key.startswith(object_prefix)),
+                release_prefix,
+            )
+
+        self.assertTrue(preexisted_complete)
+        self.assertFalse(allowed)
+        self.assertEqual(bucket.deleted, [])
+
+    def test_complete_release_hash_mismatch_fails_before_any_upload(self):
+        target_keys = [
+            f"{base}-{edition}"
+            for edition in ("standard", "sos")
+            for base in self.publisher.TARGET_SUFFIXES
+        ]
+        upload_calls = []
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            resolved = {}
+            assets = []
+            for index, target_key in enumerate(target_keys):
+                path = directory / f"asset-{index}"
+                path.write_bytes(f"local-{index}".encode())
+                resolved[target_key] = path
+                catalog_bytes = path.read_bytes() if index else b"different"
+                assets.append(
+                    {
+                        "target_key": target_key,
+                        "name": path.name,
+                        "key": f"rustdesk/stable/tag/{path.name}",
+                        "size": len(catalog_bytes),
+                        "sha256": hashlib.sha256(catalog_bytes).hexdigest(),
+                        "signature": "signature",
+                        "release": {
+                            "version": "1.5.0",
+                            "build_number": "20260930.5",
+                            "build_seq": 2026093005,
+                            "source_commit": "a" * 40,
+                            "source_tag": "v1.5.0-build-2026.09.30-05",
+                        },
+                    }
+                )
+
+            with self.assertRaisesRegex(self.publisher.PublishError, "differs"):
+                self.publisher.prepare_uploaded_assets(
+                    {"schema": 2, "assets": assets},
+                    resolved,
+                    lambda item: upload_calls.append(item),
+                    {
+                        target_key: {
+                            "version": "1.5.0",
+                            "build_number": "20260930.5",
+                            "build_seq": 2026093005,
+                            "source_commit": "a" * 40,
+                            "source_tag": "v1.5.0-build-2026.09.30-05",
+                        }
+                        for target_key in target_keys
+                    },
+                    lambda release, target_key, size, sha256, signature: None,
+                )
+
+        self.assertEqual(upload_calls, [])
+
+    def test_matching_complete_release_is_reused_without_upload(self):
+        target_keys = [
+            f"{base}-{edition}"
+            for edition in ("standard", "sos")
+            for base in self.publisher.TARGET_SUFFIXES
+        ]
+        upload_calls = []
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            resolved = {}
+            assets = []
+            for index, target_key in enumerate(target_keys):
+                path = directory / f"asset-{index}"
+                path.write_bytes(f"local-{index}".encode())
+                resolved[target_key] = path
+                assets.append(
+                    {
+                        "target_key": target_key,
+                        "name": path.name,
+                        "key": f"rustdesk/stable/tag/{path.name}",
+                        "size": path.stat().st_size,
+                        "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+                        "signature": "signature",
+                        "release": {
+                            "version": "1.5.0",
+                            "build_number": "20260930.5",
+                            "build_seq": 2026093005,
+                            "source_commit": "a" * 40,
+                            "source_tag": "v1.5.0-build-2026.09.30-05",
+                        },
+                    }
+                )
+
+            uploaded = self.publisher.prepare_uploaded_assets(
+                {"schema": 2, "assets": assets},
+                resolved,
+                lambda item: upload_calls.append(item),
+                {
+                    target_key: {
+                        "version": "1.5.0",
+                        "build_number": "20260930.5",
+                        "build_seq": 2026093005,
+                        "source_commit": "a" * 40,
+                        "source_tag": "v1.5.0-build-2026.09.30-05",
+                    }
+                    for target_key in target_keys
+                },
+                lambda release, target_key, size, sha256, signature: None,
+            )
+
+        self.assertEqual(set(uploaded), set(target_keys))
+        self.assertEqual(upload_calls, [])
+
+    def test_complete_release_identity_or_signature_mismatch_fails_before_upload(self):
+        target_keys = [
+            f"{base}-{edition}"
+            for edition in ("standard", "sos")
+            for base in self.publisher.TARGET_SUFFIXES
+        ]
+        expected_release = {
+            "version": "1.5.0",
+            "build_number": "20260930.5",
+            "build_seq": 2026093005,
+            "source_commit": "a" * 40,
+            "source_tag": "v1.5.0-build-2026.09.30-05",
+        }
+        for changed_field in ("source_commit", "signature"):
+            with self.subTest(changed_field=changed_field), tempfile.TemporaryDirectory() as tmp:
+                directory = Path(tmp)
+                resolved = {}
+                assets = []
+                for index, target_key in enumerate(target_keys):
+                    path = directory / f"asset-{index}"
+                    path.write_bytes(f"local-{index}".encode())
+                    resolved[target_key] = path
+                    release = dict(expected_release)
+                    signature = "valid"
+                    if index == 0 and changed_field == "source_commit":
+                        release["source_commit"] = "b" * 40
+                    if index == 0 and changed_field == "signature":
+                        signature = "invalid"
+                    assets.append(
+                        {
+                            "target_key": target_key,
+                            "name": path.name,
+                            "key": f"rustdesk/stable/tag/{path.name}",
+                            "size": path.stat().st_size,
+                            "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+                            "signature": signature,
+                            "release": release,
+                        }
+                    )
+                upload_calls = []
+
+                with self.assertRaises(self.publisher.PublishError):
+                    self.publisher.prepare_uploaded_assets(
+                        {"schema": 2, "assets": assets},
+                        resolved,
+                        lambda item: upload_calls.append(item),
+                        {target_key: expected_release for target_key in target_keys},
+                        lambda release, target_key, size, sha256, signature: (
+                            None
+                            if signature == "valid"
+                            else (_ for _ in ()).throw(self.publisher.PublishError("bad signature"))
+                        ),
+                    )
+
+                self.assertEqual(upload_calls, [])
+
     def test_new_catalog_records_build_sequence(self):
         source = inspect.getsource(self.publisher)
 
@@ -205,6 +517,110 @@ class PublishReleaseToOssTest(unittest.TestCase):
         target = manifest["targets"]["macos-aarch64-dmg-standard"]
         self.assertTrue(target["primary"].endswith("/rustdesk-1.5.0-standard-macos-aarch64.dmg"))
         self.assertTrue(target["mirrors"][0].endswith("/tag/rustdesk-1.5.0-standard-macos-aarch64.dmg"))
+
+    def test_schema_two_manifest_preserves_each_target_release_identity(self):
+        metadata = {
+            "version": "1.5.0",
+            "build_number": "20261002.1",
+            "build_seq": 2026100201,
+            "product": "rustdesk-yan",
+            "channel": "stable",
+            "source_commit": "a" * 40,
+        }
+        uploaded = {
+            "android-aarch64-apk-standard": {
+                "name": "rustdesk-1.5.0-standard-android-aarch64-signed.apk",
+                "key": "rustdesk/stable/new/android.apk",
+                "size": 10,
+                "sha256": "b" * 64,
+                "signature": "new",
+                "release": {**metadata, "source_tag": "new"},
+            },
+            "windows-x86_64-exe-standard": {
+                "name": "rustdesk-1.5.0-standard-windows-x86_64.exe",
+                "key": "rustdesk/stable/new/windows.exe",
+                "size": 20,
+                "sha256": "c" * 64,
+                "signature": "inherited",
+                "release": {
+                    "version": "1.5.0",
+                    "build_number": "20261001.7",
+                    "build_seq": 2026100107,
+                    "source_commit": "d" * 40,
+                    "source_tag": "old",
+                },
+            },
+        }
+
+        manifest = self.publisher.build_manifest(
+            metadata, uploaded, "owner/repo", "new", "https://download.yan.life"
+        )
+
+        self.assertEqual(manifest["schema"], 2)
+        self.assertEqual(manifest["catalog_revision"], 2026100201)
+        self.assertEqual(
+            manifest["targets"]["windows-x86_64-exe-standard"]["build_seq"],
+            2026100107,
+        )
+        self.assertEqual(
+            manifest["targets"]["android-aarch64-apk-standard"]["build_seq"],
+            2026100201,
+        )
+
+    def test_inherited_assets_are_server_side_copied_into_new_release_directory(self):
+        operations = []
+        current = {"android-aarch64-apk-standard": Path("android.apk")}
+        inherited = {
+            "windows-x86_64-exe-standard": {
+                "source_key": "rustdesk/stable/old/windows.exe",
+                "name": "windows.exe",
+                "copy_source_verified": True,
+            }
+        }
+
+        self.publisher.transfer_release_assets(
+            current,
+            inherited,
+            upload=lambda key, path: operations.append(("upload", key, str(path))),
+            copy=lambda source, key: operations.append(("copy", source, key)),
+            destination_prefix="rustdesk/stable/new/",
+        )
+
+        self.assertEqual(
+            operations,
+            [
+                ("upload", "rustdesk/stable/new/android.apk", "android.apk"),
+                (
+                    "copy",
+                    "rustdesk/stable/old/windows.exe",
+                    "rustdesk/stable/new/windows.exe",
+                ),
+            ],
+        )
+
+    def test_unverified_inherited_copy_source_falls_back_to_upload(self):
+        operations = []
+        inherited = {
+            "windows-x86_64-exe-standard": {
+                "source_key": "rustdesk/stable/old/windows.exe",
+                "name": "windows.exe",
+                "copy_source_verified": False,
+                "path": Path("verified-windows.exe"),
+            }
+        }
+
+        self.publisher.transfer_release_assets(
+            {},
+            inherited,
+            upload=lambda key, path: operations.append(("upload", key, str(path))),
+            copy=lambda source, key: operations.append(("copy", source, key)),
+            destination_prefix="rustdesk/stable/new/",
+        )
+
+        self.assertEqual(
+            operations,
+            [("upload", "rustdesk/stable/new/windows.exe", "verified-windows.exe")],
+        )
 
     def test_release_metadata_comes_from_release_checkout_and_its_commit(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -373,7 +789,7 @@ class PublishReleaseToOssTest(unittest.TestCase):
                     "sha256": f"{index:064x}",
                     "signature": "signature",
                 }
-                for index in range(10)
+                for index in range(8)
             ]
             catalogs[catalog_key] = json.dumps({
                 "schema": 1,
@@ -413,10 +829,40 @@ class PublishReleaseToOssTest(unittest.TestCase):
         expected_deleted = {
             f"{prefix}/v1.5.0-build-2026.09.{number + 20:02d}-01/{name}"
             for number in (1, 2)
-            for name in ("catalog.json", *(f"asset-{index}" for index in range(10)))
+            for name in ("catalog.json", *(f"asset-{index}" for index in range(8)))
         }
         self.assertEqual(set(bucket.deleted), expected_deleted)
         self.assertNotIn(f"{prefix}/{invalid_tag}/partial.bin", bucket.deleted)
+
+    def test_complete_catalog_rejects_legacy_ten_package_snapshot(self):
+        prefix = "rustdesk/stable"
+        tag = "v1.5.0-build-2026.09.30-05"
+        catalog_key = f"{prefix}/{tag}/catalog.json"
+        assets = [
+            {
+                "name": f"asset-{index}",
+                "key": f"{prefix}/{tag}/asset-{index}",
+                "size": index + 1,
+                "sha256": f"{index:064x}",
+                "signature": "signature",
+            }
+            for index in range(10)
+        ]
+        body = json.dumps(
+            {"schema": 1, "tag": tag, "published_at": 1, "assets": assets}
+        ).encode()
+        keys = [catalog_key, *(asset["key"] for asset in assets)]
+        sizes = {
+            catalog_key: len(body),
+            **{asset["key"]: asset["size"] for asset in assets},
+        }
+        bucket = FakeBucket({catalog_key: body}, keys, sizes)
+
+        catalog = self.publisher.valid_complete_catalog(
+            bucket, catalog_key, set(keys), prefix, tag
+        )
+
+        self.assertIsNone(catalog)
 
     def test_cleanup_rejects_catalog_build_sequence_that_disagrees_with_tag(self):
         prefix = "rustdesk/stable"
