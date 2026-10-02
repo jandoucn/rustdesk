@@ -186,6 +186,9 @@ class ReleaseAndRemoteUiContractTest(unittest.TestCase):
         self.assertIn('Ok("apk")', updater)
 
     def test_android_starts_realtime_update_policy_and_opens_verified_apk(self):
+        crate_root = (ROOT / "src/lib.rs").read_text()
+        self.assertIn('#[cfg(not(target_os = "ios"))]\nmod updater;', crate_root)
+
         ffi = (ROOT / "src/flutter_ffi.rs").read_text()
         initializer = ffi[ffi.index("fn initialize(") : ffi.index("pub fn set_cur_session_id")]
         self.assertIn('#[cfg(not(target_os = "ios"))]\n    crate::updater::start_auto_update();', initializer)
