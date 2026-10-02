@@ -10,9 +10,9 @@ class ReleaseMetadataPolicyTest(unittest.TestCase):
     def test_failed_build_retry_keeps_semver_and_uses_unique_build_sequence(self):
         metadata = json.loads((ROOT / "version.json").read_text())
 
-        self.assertEqual(metadata["version"], "1.5.1")
-        self.assertEqual(metadata["build_number"], "20261002.5")
-        self.assertEqual(metadata["build_seq"], 2026100205)
+        self.assertEqual(metadata["version"], "1.5.2")
+        self.assertEqual(metadata["build_number"], "20261002.6")
+        self.assertEqual(metadata["build_seq"], 2026100206)
 
     def test_release_metadata_stays_empty_and_uses_the_canonical_tag(self):
         agents = (ROOT / "AGENTS.md").read_text()
