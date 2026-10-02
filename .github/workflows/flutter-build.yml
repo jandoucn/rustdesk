@@ -973,11 +973,13 @@ jobs:
       - name: Sign copied service without hardened runtime
         if: env.MACOS_P12_BASE64 == null || env.MACOS_P12_BASE64 == ''
         run: |
+          # Xcode already ad-hoc signed the app with hardened runtime off.
+          # The copied service is unsigned. Sign that binary, then reseal the
+          # app without --options runtime so Gatekeeper still accepts xattr -cr.
           app="./flutter/build/macos/Build/Products/Release/RustDesk Yan.app"
-          bash ./.github/scripts/sign-macos-app.sh \
-            "$app" \
-            "-" \
-            ./flutter/macos/Runner/Release.entitlements
+          codesign --force --sign - "$app/Contents/MacOS/service"
+          codesign --force --sign - "$app"
+          codesign --verify --deep --strict --verbose=2 "$app"
           flags=$(codesign -d --verbose=4 \
             "$app" 2>&1 \
             | awk -F= '/^CodeDirectory /{print $0}')

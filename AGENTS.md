@@ -17,6 +17,11 @@
 * 不要在提交说明里写英文句子。代码、路径、命令和 `RustDesk`、`SOS` 这类名称保持原样。
 * 不要改这些固定配置：固定密码 `asd123asd`，ID 服务器 `rd.yan.life`，API `https://rdapi.yan.life`，公钥 `WAVL+YUYZ6EXOqLCGZEq56VD2LalZc121gtVeXxpp78=`。standard 和 SOS 都同时启用固定密码和一次性密码，并默认打开全部远程权限。
 * OSS 发布采用分离链路：GitHub Actions 上传必须使用 `oss-accelerate.aliyuncs.com`；客户端 `DOWNLOAD_BASE` 固定为 `https://download.yan.life`，其 CNAME 指向 `rustdesk-release.oss-cn-shanghai.aliyuncs.com`，不要因上传加速而改动客户端下载域名。
+* macOS 包签名必须保持成功构建 run `36898758124` 和 `36859858472` 使用的既有方法，不得借构建修复重构或替换签名链：
+  * 无证书构建依次执行 `codesign --force --sign - "$app/Contents/MacOS/service"`、`codesign --force --sign - "$app"`、`codesign --verify --deep --strict --verbose=2 "$app"`，不得启用 hardened runtime；
+  * 正式证书构建继续使用 `.github/scripts/sign-macos-app.sh` 原有 `sign_args`，仅真实 identity 添加 `--options runtime --timestamp`，保持现有 entitlements、DMG 签名和公证流程；
+  * 禁止增加 `--requirements`、designated requirement 校验、`PlistBuddy` 依赖或其他会改变现有应用签名身份和可运行性的参数；
+  * 修改 macOS 签名相关 workflow 或脚本时，必须通过 `tests/test_macos_signing.py` 回归测试，并与上述成功 run 对应提交的签名命令逐项核对。
 
 ## 构建修复约束
 
