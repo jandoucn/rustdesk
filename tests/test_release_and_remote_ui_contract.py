@@ -6,6 +6,26 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class ReleaseAndRemoteUiContractTest(unittest.TestCase):
+    def test_macos_retina_input_mapping_keeps_the_upstream_display_index_path(self):
+        source = (ROOT / "src/server/connection.rs").read_text()
+        quartz = (ROOT / "libs/scrap/src/common/quartz.rs").read_text()
+        retina = source[
+            source.index("struct Retina") : source.index(
+                "/// Get control permission state", source.index("struct Retina")
+            )
+        ]
+
+        self.assertNotIn("selected_display_name", retina)
+        self.assertNotIn("select_display", retina)
+        self.assertNotIn("display_matching", retina)
+        self.assertIn("let Some(d) = self.displays.get(current) else", retina)
+        self.assertIn("fn set_displays(&mut self, displays: &Vec<DisplayInfo>)", retina)
+        self.assertIn("conn.retina.set_displays(&_pi.displays);", source)
+        self.assertIn("self.retina.set_displays(&displays);", source)
+        self.assertIn("Ok(quartz::Display::online()", quartz)
+        self.assertNotIn("fn active_displays", quartz)
+        self.assertNotIn("display.is_active()", quartz)
+
     def test_macos_mouse_buttons_keep_the_upstream_cursor_location_path(self):
         source = (ROOT / "libs/enigo/src/macos/macos_impl.rs").read_text()
         mouse_down = source[source.index("fn mouse_down"):source.index("fn mouse_up")]
@@ -15,6 +35,37 @@ class ReleaseAndRemoteUiContractTest(unittest.TestCase):
         self.assertIn("Self::mouse_location()", mouse_up)
         self.assertNotIn("self.current_mouse_location()", mouse_down)
         self.assertNotIn("self.current_mouse_location()", mouse_up)
+
+    def test_macos_relative_mouse_keeps_the_upstream_edge_reset_path(self):
+        source = (ROOT / "libs/enigo/src/macos/macos_impl.rs").read_text()
+        relative_move = source[
+            source.index("fn mouse_move_relative") : source.index(
+                "fn mouse_down", source.index("fn mouse_move_relative")
+            )
+        ]
+
+        self.assertNotIn("fn relative_mouse_target", source)
+        self.assertIn("Self::main_display_size()", relative_move)
+        self.assertIn("Self::mouse_location_raw_coords()", relative_move)
+        self.assertIn("let near_edge =", relative_move)
+
+    def test_flutter_display_topology_keeps_the_upstream_switch_path(self):
+        source = (ROOT / "flutter/lib/models/model.dart").read_text()
+        peer_info = source[
+            source.index("  handlePeerInfo(Map<String, dynamic>") : source.index(
+                "handleSyncPeerInfo(",
+                source.index("  handlePeerInfo(Map<String, dynamic>"),
+            )
+        ]
+        defaults = (
+            ROOT / "flutter/lib/utils/session_option_defaults.dart"
+        ).read_text()
+
+        self.assertNotIn("normalizedDisplayIndexAfterTopologyChange", source)
+        self.assertNotIn("localIsAndroid", defaults)
+        self.assertIn("localIsWindows && peerIsMacOS", defaults)
+        self.assertIn("if (_pi.currentDisplay < _pi.displays.length)", peer_info)
+        self.assertIn("updateCurDisplay(sessionId);", peer_info)
 
     def test_release_snapshot_requires_standard_and_sos_editions(self):
         caller = (ROOT / ".github/workflows/flutter-tag.yml").read_text()

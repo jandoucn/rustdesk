@@ -169,36 +169,6 @@ impl Enigo {
     }
 }
 
-fn relative_mouse_target(current: (i32, i32), delta: (i32, i32)) -> (i32, i32) {
-    (
-        current.0.saturating_add(delta.0),
-        current.1.saturating_add(delta.1),
-    )
-}
-
-#[cfg(test)]
-mod tests {
-    use super::relative_mouse_target;
-
-    #[test]
-    fn relative_mouse_crosses_an_internal_display_boundary() {
-        assert_eq!(relative_mouse_target((995, 400), (10, 0)), (1005, 400));
-    }
-
-    #[test]
-    fn relative_mouse_supports_negative_display_origins() {
-        assert_eq!(relative_mouse_target((5, 300), (-10, 0)), (-5, 300));
-    }
-
-    #[test]
-    fn relative_mouse_saturates_extreme_coordinates() {
-        assert_eq!(
-            relative_mouse_target((i32::MAX - 2, i32::MIN + 2), (10, -10)),
-            (i32::MAX, i32::MIN)
-        );
-    }
-}
-
 impl Default for Enigo {
     fn default() -> Self {
         let mut double_click_interval = 500;
@@ -244,8 +214,44 @@ impl MouseControllable for Enigo {
     }
 
     fn mouse_move_relative(&mut self, x: i32, y: i32) {
-        let (current_x, current_y) = Self::mouse_location();
-        let (new_x, new_y) = relative_mouse_target((current_x, current_y), (x, y));
+        let (display_width, display_height) = Self::main_display_size();
+        let (current_x, y_inv) = Self::mouse_location_raw_coords();
+        let current_y = (display_height as i32) - y_inv;
+        // Use saturating arithmetic to prevent overflow/wraparound
+        let mut new_x = current_x.saturating_add(x);
+        let mut new_y = current_y.saturating_add(y);
+
+        // Define screen center and edge margins for cursor reset
+        let center_x = (display_width / 2) as i32;
+        let center_y = (display_height / 2) as i32;
+        // Margin calculation: 5% of the smaller screen dimension with a minimum of 50px.
+        // This provides a comfortable buffer zone to detect when the cursor is approaching
+        // screen edges, allowing us to reset it to center before it hits the boundary.
+        // This ensures continuous relative mouse movement without getting stuck at edges.
+        let margin = (display_width.min(display_height) / 20).max(50) as i32;
+
+        // Check if cursor is approaching screen boundaries
+        // Use saturating_sub to prevent negative thresholds on very small displays
+        let right = (display_width as i32).saturating_sub(margin);
+        let bottom = (display_height as i32).saturating_sub(margin);
+        let near_edge = new_x < margin
+            || new_x > right
+            || new_y < margin
+            || new_y > bottom;
+
+        if near_edge {
+            // Reset cursor to screen center to allow continuous movement
+            // The delta values are still passed correctly for games/apps
+            new_x = center_x;
+            new_y = center_y;
+        }
+
+        // Clamp to screen bounds as a safety measure.
+        // Use saturating_sub(1) to ensure coordinates don't exceed the last valid pixel.
+        let max_x = (display_width as i32).saturating_sub(1).max(0);
+        let max_y = (display_height as i32).saturating_sub(1).max(0);
+        new_x = new_x.clamp(0, max_x);
+        new_y = new_y.clamp(0, max_y);
 
         // Pass delta values for relative movement
         // This is critical for browser Pointer Lock API support

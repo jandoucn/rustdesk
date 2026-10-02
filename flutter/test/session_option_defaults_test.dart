@@ -36,40 +36,31 @@ void main() {
       );
     });
 
-    test('Windows and Android controllers swap keys for macOS peers', () {
+    test('Windows controllers swap Control and Command for macOS peers', () {
       expect(
         shouldAutoEnableControlCommandSwap(
           localIsWindows: true,
-          localIsAndroid: false,
-          peerIsMacOS: true,
-        ),
-        isTrue,
-      );
-      expect(
-        shouldAutoEnableControlCommandSwap(
-          localIsWindows: false,
-          localIsAndroid: true,
           peerIsMacOS: true,
         ),
         isTrue,
       );
     });
 
-    test('other controller and peer combinations keep the existing default',
-        () {
-      expect(
-        shouldAutoEnableControlCommandSwap(
-          localIsWindows: true,
-          localIsAndroid: false,
-          peerIsMacOS: false,
-        ),
-        isFalse,
-      );
+    test('Android controllers do not enable desktop key swapping', () {
       expect(
         shouldAutoEnableControlCommandSwap(
           localIsWindows: false,
-          localIsAndroid: false,
           peerIsMacOS: true,
+        ),
+        isFalse,
+      );
+    });
+
+    test('Windows controllers keep normal keys for non-macOS peers', () {
+      expect(
+        shouldAutoEnableControlCommandSwap(
+          localIsWindows: true,
+          peerIsMacOS: false,
         ),
         isFalse,
       );

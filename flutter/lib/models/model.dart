@@ -1367,7 +1367,6 @@ class FfiModel with ChangeNotifier {
     _pi.platform = evt['platform'];
     if (shouldAutoEnableControlCommandSwap(
             localIsWindows: isWindows,
-            localIsAndroid: isAndroid,
             peerIsMacOS: _pi.platform == kPeerPlatformMacOS) &&
         !bind.sessionGetToggleOptionSync(
             sessionId: sessionId, arg: 'allow_swap_key')) {
@@ -1431,29 +1430,15 @@ class FfiModel with ChangeNotifier {
       }
       _pi.displays.value = newDisplays;
       _pi.displaysCount.value = _pi.displays.length;
-      final normalizedDisplay = normalizedDisplayIndexAfterTopologyChange(
-        currentDisplay: _pi.currentDisplay,
-        serverDisplay: currentDisplay,
-        displayCount: _pi.displays.length,
-      );
-      if (normalizedDisplay != _pi.currentDisplay) {
-        _pi.currentDisplay = normalizedDisplay;
-        try {
-          CurrentDisplayState.find(peerId).value = normalizedDisplay;
-        } catch (error) {
-          debugPrint('Failed to synchronize current display state: $error');
-        }
-      }
-      if (_pi.currentDisplay == kAllDisplayValue ||
-          (_pi.currentDisplay >= 0 &&
-              _pi.currentDisplay < _pi.displays.length)) {
+      if (_pi.currentDisplay < _pi.displays.length) {
+        // now replaced to _updateCurDisplay
         updateCurDisplay(sessionId);
       }
       // After reconnecting, restore the last selected monitor once the canvas is ready.
       // Switching earlier can offset the view if the monitor sizes differ.
-      final last = lastUserDisplay;
+      // New monitor windows keep their selection in currentDisplay.
+      final last = lastUserDisplay ?? _pi.currentDisplay;
       pendingMonitorRestore = (!isCache &&
-              last != null &&
               last != currentDisplay &&
               bind.sessionGetUseAllMyDisplaysForTheRemoteSession(
                       sessionId: sessionId) !=
@@ -4531,23 +4516,6 @@ class Features {
 }
 
 const kInvalidDisplayIndex = -1;
-
-int normalizedDisplayIndexAfterTopologyChange({
-  required int currentDisplay,
-  required int serverDisplay,
-  required int displayCount,
-}) {
-  if (currentDisplay == kAllDisplayValue || displayCount <= 0) {
-    return currentDisplay;
-  }
-  if (currentDisplay >= 0 && currentDisplay < displayCount) {
-    return currentDisplay;
-  }
-  if (serverDisplay >= 0 && serverDisplay < displayCount) {
-    return serverDisplay;
-  }
-  return 0;
-}
 
 class PeerInfo with ChangeNotifier {
   String version = '';

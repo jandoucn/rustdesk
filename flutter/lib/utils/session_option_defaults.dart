@@ -9,7 +9,6 @@ bool shouldApplySessionOptionDefaults({required bool hasTabWindowId}) =>
 
 bool shouldAutoEnableControlCommandSwap({
   required bool localIsWindows,
-  required bool localIsAndroid,
   required bool peerIsMacOS,
 }) =>
-    (localIsWindows || localIsAndroid) && peerIsMacOS;
+    localIsWindows && peerIsMacOS;

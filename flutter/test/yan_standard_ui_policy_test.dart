@@ -32,44 +32,6 @@ void main() {
     );
   });
 
-  test('display topology removal falls back to the only remaining display', () {
-    expect(
-      normalizedDisplayIndexAfterTopologyChange(
-        currentDisplay: 1,
-        serverDisplay: 0,
-        displayCount: 1,
-      ),
-      0,
-    );
-    expect(
-      normalizedDisplayIndexAfterTopologyChange(
-        currentDisplay: 7,
-        serverDisplay: 1,
-        displayCount: 2,
-      ),
-      1,
-    );
-  });
-
-  test('display topology keeps all-display and valid selections', () {
-    expect(
-      normalizedDisplayIndexAfterTopologyChange(
-        currentDisplay: kAllDisplayValue,
-        serverDisplay: 0,
-        displayCount: 2,
-      ),
-      kAllDisplayValue,
-    );
-    expect(
-      normalizedDisplayIndexAfterTopologyChange(
-        currentDisplay: 1,
-        serverDisplay: 0,
-        displayCount: 2,
-      ),
-      1,
-    );
-  });
-
   test('Android pointer coordinates reach the selected macOS secondary display', () {
     final secondary = Rect.fromLTRB(-1920, 0, 0, 1080);
 
