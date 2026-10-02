@@ -137,6 +137,7 @@ jobs:
           flutter test \
             test/address_book_customization_test.dart \
             test/yan_standard_ui_policy_test.dart \
+            test/desktop_update_card_test.dart \
             test/verified_update_entry_test.dart
 
   run-flutter-tag-build:

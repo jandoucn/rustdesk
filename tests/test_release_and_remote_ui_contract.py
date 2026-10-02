@@ -206,15 +206,24 @@ class ReleaseAndRemoteUiContractTest(unittest.TestCase):
         update_card = desktop[desktop.index("Widget buildHelpCards") : desktop.index("if (systemError", desktop.index("Widget buildHelpCards"))]
         self.assertNotIn("mainUriPrefixSync().contains('rustdesk')", update_card)
 
-    def test_home_page_hides_online_update_card(self):
+    def test_home_page_uses_version_only_update_card(self):
         desktop = (ROOT / "flutter/lib/desktop/pages/desktop_home_page.dart").read_text()
         update_card = desktop[
             desktop.index("Widget buildHelpCards") : desktop.index(
                 "if (systemError", desktop.index("Widget buildHelpCards")
             )
         ]
-        self.assertNotIn("if (updateUrl.isNotEmpty", update_card)
-        self.assertNotIn("new-version-of-{", update_card)
+        self.assertIn("desktopUpdateCardVisible.value", update_card)
+        self.assertIn("version: updateUiState.targetVersion.value", update_card)
+        self.assertIn("handleUpdate(updateUiState.updateUrl.value)", update_card)
+        self.assertIn("onClose: () => desktopUpdateCardVisible.value = false", update_card)
+        self.assertNotIn("Changelog", update_card)
+        self.assertNotIn("launchUrl", update_card)
+
+        main = (ROOT / "flutter/lib/main.dart").read_text()
+        prompt = main[main.index("Future<void> _showStartupUpdatePrompt") : main.index("void _handleDesktopUpdateResult")]
+        self.assertIn("if (isDesktop)", prompt)
+        self.assertIn("desktopUpdateCardVisible.value = true", prompt)
 
     def test_update_commands_report_command_id_for_download_and_install_states(self):
         updater = (ROOT / "src/updater.rs").read_text()

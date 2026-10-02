@@ -1,8 +1,10 @@
 import 'dart:async';
 
+import 'package:get/get.dart';
 import 'package:flutter_hbb/models/platform_model.dart';
 
 const verifiedUpdateCommandKey = 'install-verified-update';
+final desktopUpdateCardVisible = false.obs;
 
 typedef UpdateCommand = Future<void> Function({
   required String key,

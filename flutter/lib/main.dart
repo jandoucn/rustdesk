@@ -478,6 +478,10 @@ class _AppState extends State<App> with WidgetsBindingObserver, WindowListener {
 
   Future<void> _showStartupUpdatePrompt(String url) async {
     if (!mounted || url.isEmpty || _startupPromptShowing) return;
+    if (isDesktop) {
+      desktopUpdateCardVisible.value = true;
+      return;
+    }
     final dialogContext = globalKey.currentState?.overlay?.context;
     if (dialogContext == null) return;
     _startupPromptShowing = true;
