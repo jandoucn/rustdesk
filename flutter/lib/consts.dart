@@ -725,3 +725,5 @@ extension WindowsTargetExt on int {
 const kCheckSoftwareUpdateFinish = 'check_software_update_finish';
 const kSoftwareUpdateEvent = 'software_update_event';
 const kUpdatePolicyChanged = 'update_policy_changed';
+const kAndroidUpdateReady = 'android_update_ready';
+const kAndroidUpdateInstallResult = 'android-update-install-result';

@@ -4167,7 +4167,9 @@ bool shouldShowDesktopUpdatePrompt({
 }) {
   return windowVisible &&
       !autoUpdate &&
-      (requestOrigin == 'command' || requestOrigin == 'startup') &&
+      (requestOrigin == 'command' ||
+          requestOrigin == 'startup' ||
+          requestOrigin == 'system') &&
       updateUrl.isNotEmpty;
 }
 
@@ -4196,6 +4198,67 @@ String softwareUpdateCheckStatus({
   return 'Up to date';
 }
 
+String androidUpdateInstallStatus({
+  required String status,
+  String error = '',
+}) {
+  switch (status) {
+    case 'permission_required':
+      return 'Installation permission required';
+    case 'confirmation_required':
+      return 'Installation confirmation required';
+    case 'installing':
+      return 'Installing update';
+    case 'installed':
+      return 'Update installed';
+    case 'failed':
+      return error.isEmpty ? 'Update installation failed' : error;
+    default:
+      return status;
+  }
+}
+
+bool isAndroidUpdateInstallTerminal(String status) =>
+    status == 'installed' || status == 'failed';
+
+Future<void> startAndroidVerifiedUpdate(Map<String, dynamic> event) async {
+  final path = event['path']?.toString() ?? '';
+  if (path.isEmpty) return;
+  stateGlobal.updateStatus.value = 'Installing update';
+  try {
+    final result = await gFFI.invokeMethod('install_verified_apk', event);
+    if (result is Map) {
+      final status = result['status']?.toString() ?? '';
+      if (status.isNotEmpty) {
+        stateGlobal.updateStatus.value = androidUpdateInstallStatus(status: status);
+      }
+    }
+  } catch (error) {
+    final result = <String, dynamic>{
+      ...event,
+      'status': 'failed',
+      'error': 'native_install_start_failed:$error',
+    };
+    stateGlobal.updateStatus.value = result['error'].toString();
+    await bind.mainSetCommon(
+      key: kAndroidUpdateInstallResult,
+      value: jsonEncode(result),
+    );
+  }
+}
+
+Future<void> consumePendingAndroidUpdateReady() async {
+  if (!isAndroid) return;
+  final nativeStatus = await gFFI.invokeMethod('get_update_install_status');
+  if (nativeStatus is Map && nativeStatus['status']?.toString() != 'idle') return;
+  final encoded = await bind.mainGetCommon(key: 'pending-android-update-ready');
+  if (encoded.isEmpty) return;
+  final event = jsonDecode(encoded);
+  if (event is Map) {
+    await startAndroidVerifiedUpdate(Map<String, dynamic>.from(event));
+  }
+}
+
 void checkUpdate() {
   if (!isWeb) {
     platformFFI.registerEventHandler(
@@ -4214,6 +4277,13 @@ void checkUpdate() {
         stateGlobal.updateStatus.value = evt['status'];
       }
     });
+    if (isAndroid) {
+      platformFFI.registerEventHandler(
+          kAndroidUpdateReady, kAndroidUpdateReady,
+          (Map<String, dynamic> evt) async {
+        await startAndroidVerifiedUpdate(evt);
+      });
+    }
     platformFFI.registerEventHandler(kUpdatePolicyChanged, kUpdatePolicyChanged,
         (Map<String, dynamic> evt) async {
       if (!shouldApplyUpdatePolicy(

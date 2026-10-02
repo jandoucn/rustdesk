@@ -1231,11 +1231,11 @@ async fn do_check_software_update_inner(
     *SOFTWARE_UPDATE_RESPONSE.lock().unwrap() = None;
     LAST_UPDATE_ERROR.lock().unwrap().clear();
     *LAST_UPDATE_CHECK.lock().unwrap() = Some(chrono::Utc::now().to_rfc3339());
-    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+    #[cfg(not(target_os = "ios"))]
     SOFTWARE_UPDATE_TARGET_KEY.lock().unwrap().clear();
     let (mut request, url) =
         hbb_common::version_check_request(hbb_common::VER_TYPE_RUSTDESK_CLIENT.to_string());
-    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+    #[cfg(not(target_os = "ios"))]
     let (target_key, package_kind) = crate::updater::current_update_target()?;
     request.product = crate::PRODUCT.to_owned();
     request.edition = crate::EDITION.to_owned();
@@ -1258,7 +1258,7 @@ async fn do_check_software_update_inner(
         "installed"
     }
     .to_owned();
-    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+    #[cfg(not(target_os = "ios"))]
     {
         request.target_key = target_key.clone();
         request.package_kind = package_kind;
@@ -1270,7 +1270,7 @@ async fn do_check_software_update_inner(
     request.client_id = identity.client_id.clone();
     request.client_uuid = identity.client_uuid.clone();
     let body = serde_json::to_vec(&request)?;
-    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+    #[cfg(not(target_os = "ios"))]
     let auth = crate::updater::update_device_auth_headers(
         "POST",
         &url,
@@ -1293,7 +1293,7 @@ async fn do_check_software_update_inner(
             .post(&url)
             .header("Content-Type", "application/json")
             .body(body.clone());
-        #[cfg(not(any(target_os = "android", target_os = "ios")))]
+        #[cfg(not(target_os = "ios"))]
         {
             builder = builder
                 .header("X-RustDesk-Device-ID", &auth.device_id)
@@ -1334,7 +1334,7 @@ async fn do_check_software_update_inner(
             target_key: String::new(),
         });
     }
-    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+    #[cfg(not(target_os = "ios"))]
     {
         let manifest = resp
             .manifest
@@ -1351,7 +1351,7 @@ async fn do_check_software_update_inner(
             &target_key,
         )?;
     }
-    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+    #[cfg(not(target_os = "ios"))]
     let response_url = resp
         .manifest
         .as_ref()
@@ -1363,7 +1363,7 @@ async fn do_check_software_update_inner(
         })
         .filter(|url| !url.is_empty())
         .unwrap_or_else(|| resp.url.clone());
-    #[cfg(any(target_os = "android", target_os = "ios"))]
+    #[cfg(target_os = "ios")]
     let response_url = resp.url.clone();
     let is_newer = resp.update_available
         && hbb_common::is_newer_version(
@@ -1373,11 +1373,11 @@ async fn do_check_software_update_inner(
             crate::BUILD_SEQ,
         );
     if is_newer {
-        #[cfg(not(any(target_os = "android", target_os = "ios")))]
+        #[cfg(not(target_os = "ios"))]
         let result_target_key = target_key.clone();
-        #[cfg(any(target_os = "android", target_os = "ios"))]
+        #[cfg(target_os = "ios")]
         let result_target_key = String::new();
-        #[cfg(not(any(target_os = "android", target_os = "ios")))]
+        #[cfg(not(target_os = "ios"))]
         {
             *SOFTWARE_UPDATE_TARGET_KEY.lock().unwrap() = target_key;
         }
@@ -1395,7 +1395,7 @@ async fn do_check_software_update_inner(
             target_key: result_target_key,
         });
     } else {
-        #[cfg(not(any(target_os = "android", target_os = "ios")))]
+        #[cfg(not(target_os = "ios"))]
         SOFTWARE_UPDATE_TARGET_KEY.lock().unwrap().clear();
         *SOFTWARE_UPDATE_URL.lock().unwrap() = "".to_string();
         push_software_update_check_event(Some(&resp), "", "", request_origin, request_id);

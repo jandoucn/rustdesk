@@ -10,14 +10,19 @@ package com.carriez.flutter_hbb
 import ffi.FFI
 
 import android.app.Activity
+import android.app.PendingIntent
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.content.ServiceConnection
 import android.content.ClipboardManager
+import android.content.pm.PackageInstaller
+import android.content.pm.PackageManager
 import android.os.Bundle
 import android.os.Build
+import android.os.Handler
 import android.os.IBinder
+import android.os.Looper
 import android.util.Log
 import android.view.WindowManager
 import android.media.MediaCodecInfo
@@ -28,9 +33,11 @@ import android.media.MediaFormat
 import android.net.Uri
 import android.provider.DocumentsContract
 import android.provider.OpenableColumns
+import android.provider.Settings
 import android.webkit.MimeTypeMap
 import android.util.DisplayMetrics
 import androidx.annotation.RequiresApi
+import androidx.core.content.FileProvider
 import org.json.JSONArray
 import org.json.JSONObject
 import com.hjq.permissions.XXPermissions
@@ -41,6 +48,7 @@ import kotlin.concurrent.thread
 import java.io.File
 import java.io.FileInputStream
 import java.io.FileOutputStream
+import java.util.UUID
 
 
 class MainActivity : FlutterActivity() {
@@ -49,6 +57,26 @@ class MainActivity : FlutterActivity() {
         private var _rdClipboardManager: RdClipboardManager? = null
         val rdClipboardManager: RdClipboardManager?
             get() = _rdClipboardManager;
+
+        private const val KEY_PENDING_UPDATE_APK = "KEY_PENDING_UPDATE_APK"
+        private const val KEY_UPDATE_INSTALL_STATUS = "KEY_UPDATE_INSTALL_STATUS"
+        private const val KEY_UPDATE_INSTALL_ERROR = "KEY_UPDATE_INSTALL_ERROR"
+        private const val STATUS_PERMISSION_REQUIRED = "permission_required"
+        private const val STATUS_INSTALLING = "installing"
+
+        fun emitUpdateInstallStatus(context: Context, status: String, error: String) {
+            context.getSharedPreferences(KEY_SHARED_PREFERENCES, Context.MODE_PRIVATE)
+                .edit()
+                .putString(KEY_UPDATE_INSTALL_STATUS, status)
+                .putString(KEY_UPDATE_INSTALL_ERROR, error)
+                .apply()
+            Handler(Looper.getMainLooper()).post {
+                flutterMethodChannel?.invokeMethod(
+                    "on_android_update_install_status",
+                    mapOf("status" to status, "error" to error)
+                )
+            }
+        }
     }
 
     private val channelTag = "mChannel"
@@ -73,6 +101,8 @@ class MainActivity : FlutterActivity() {
     private var pendingPicker: PendingPicker? = null
 
     private var isAudioStart = false
+    @Volatile
+    private var updateInstallBusy = false
     private val audioRecordHandle = AudioRecordHandle(this, { false }, { isAudioStart })
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
@@ -104,7 +134,15 @@ class MainActivity : FlutterActivity() {
                 "on_state_changed",
                 mapOf("name" to "input", "value" to inputPer.toString())
             )
+            val installState = readUpdateInstallStatus()
+            if (installState["status"] != "idle") {
+                flutterMethodChannel?.invokeMethod(
+                    "on_android_update_install_status",
+                    installState
+                )
+            }
         }
+        resumePendingUpdateInstall()
     }
 
     private fun requestMediaProjection() {
@@ -307,6 +345,24 @@ class MainActivity : FlutterActivity() {
                     } else {
                         result.success(false)
                     }
+                }
+                "install_verified_apk" -> {
+                    val path = when (val arguments = call.arguments) {
+                        is String -> arguments
+                        is Map<*, *> -> arguments["path"] as? String
+                        else -> null
+                    }
+                    if (path.isNullOrBlank()) {
+                        result.error("invalid_update_apk", "Missing verified APK path", null)
+                    } else {
+                        installVerifiedApk(path, result)
+                    }
+                }
+                "get_update_install_status" -> {
+                    result.success(readUpdateInstallStatus())
+                }
+                "clear_update_install_status" -> {
+                    result.success(clearUpdateInstallStatus())
                 }
                 START_ACTION -> {
                     if (call.arguments is String) {
@@ -953,6 +1009,285 @@ class MainActivity : FlutterActivity() {
         result.put("h", h)
         result.put("codecs", codecArray)
         FFI.setCodecInfo(result.toString())
+    }
+
+    private fun installVerifiedApk(path: String, result: MethodChannel.Result) {
+        if (updateInstallBusy) {
+            result.error("update_install_busy", "An update installation is already starting", null)
+            return
+        }
+        updateInstallBusy = true
+        thread {
+            var staged: File? = null
+            try {
+                val source = validatePrivateUpdateApk(path)
+                val stagedFile = stageVerifiedApk(source)
+                staged = stagedFile
+                if (!source.delete()) {
+                    Log.w(logTag, "Verified source APK could not be removed after staging")
+                }
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O &&
+                    !packageManager.canRequestPackageInstalls()
+                ) {
+                    rememberPendingUpdate(stagedFile)
+                    emitUpdateInstallStatus(this, STATUS_PERMISSION_REQUIRED, "")
+                    runOnUiThread {
+                        try {
+                            startActivity(Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES).apply {
+                                data = Uri.parse("package:$packageName")
+                            })
+                            result.success(mapOf("status" to STATUS_PERMISSION_REQUIRED))
+                        } catch (error: Exception) {
+                            clearPendingUpdate()
+                            stagedFile.delete()
+                            emitUpdateInstallStatus(
+                                this,
+                                UpdateInstallReceiver.STATUS_FAILED,
+                                "open_unknown_sources_settings_failed"
+                            )
+                            result.error(
+                                "unknown_sources_settings_failed",
+                                error.message,
+                                null
+                            )
+                        } finally {
+                            updateInstallBusy = false
+                        }
+                    }
+                } else {
+                    val status = submitVerifiedApk(stagedFile)
+                    runOnUiThread {
+                        updateInstallBusy = false
+                        result.success(mapOf("status" to status))
+                    }
+                }
+            } catch (error: Exception) {
+                Log.e(logTag, "Unable to install verified update", error)
+                staged?.delete()
+                emitUpdateInstallStatus(
+                    this,
+                    UpdateInstallReceiver.STATUS_FAILED,
+                    "start_install_failed"
+                )
+                runOnUiThread {
+                    updateInstallBusy = false
+                    result.error("update_install_failed", error.message, null)
+                }
+            }
+        }
+    }
+
+    private fun resumePendingUpdateInstall() {
+        if (updateInstallBusy ||
+            (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O &&
+                !packageManager.canRequestPackageInstalls())
+        ) {
+            return
+        }
+        val pendingPath = getSharedPreferences(KEY_SHARED_PREFERENCES, MODE_PRIVATE)
+            .getString(KEY_PENDING_UPDATE_APK, null) ?: return
+        updateInstallBusy = true
+        thread {
+            var staged: File? = null
+            try {
+                val stagedFile = validateStagedUpdateApk(pendingPath)
+                staged = stagedFile
+                submitVerifiedApk(stagedFile)
+            } catch (error: Exception) {
+                Log.e(logTag, "Unable to resume verified update installation", error)
+                clearPendingUpdate()
+                staged?.delete()
+                emitUpdateInstallStatus(
+                    this,
+                    UpdateInstallReceiver.STATUS_FAILED,
+                    "resume_install_failed"
+                )
+            } finally {
+                updateInstallBusy = false
+            }
+        }
+    }
+
+    private fun validatePrivateUpdateApk(path: String): File {
+        val file = File(path)
+        val canonical = file.canonicalFile
+        if (file.absoluteFile != canonical || !isInsidePrivateDirectory(canonical)) {
+            throw SecurityException("Verified APK must be an app-private regular file")
+        }
+        validateApkFile(canonical)
+        return canonical
+    }
+
+    private fun validateStagedUpdateApk(path: String): File {
+        val stagedRoot = File(filesDir, "verified_updates").canonicalFile
+        val file = File(path)
+        val canonical = file.canonicalFile
+        if (file.absoluteFile != canonical || !isDescendant(canonical, stagedRoot)) {
+            throw SecurityException("Pending APK is outside the verified update directory")
+        }
+        validateApkFile(canonical)
+        return canonical
+    }
+
+    private fun validateApkFile(file: File) {
+        if (!file.isFile || !file.canRead() || file.length() <= 0L ||
+            !file.name.endsWith(".apk", ignoreCase = true)
+        ) {
+            throw IllegalArgumentException("Verified update is not a readable APK")
+        }
+        val archive = packageManager.getPackageArchiveInfo(file.path, 0)
+            ?: throw IllegalArgumentException("Verified update APK cannot be parsed")
+        if (archive.packageName != packageName) {
+            throw SecurityException("Verified update APK belongs to another application")
+        }
+    }
+
+    private fun isInsidePrivateDirectory(file: File): Boolean {
+        val roots = mutableListOf(filesDir, cacheDir, noBackupFilesDir)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+            roots.add(codeCacheDir)
+        }
+        return roots.any { isDescendant(file, it.canonicalFile) }
+    }
+
+    private fun isDescendant(file: File, root: File): Boolean {
+        return file.path.startsWith(root.path + File.separator)
+    }
+
+    private fun stageVerifiedApk(source: File): File {
+        val updateDir = File(filesDir, "verified_updates")
+        if (!updateDir.exists() && !updateDir.mkdirs()) {
+            throw IllegalStateException("Unable to create verified update directory")
+        }
+        val staged = File(updateDir, "update-${UUID.randomUUID()}.apk")
+        try {
+            FileInputStream(source).use { input ->
+                FileOutputStream(staged).use { output ->
+                    input.copyTo(output)
+                    output.fd.sync()
+                }
+            }
+            validateStagedUpdateApk(staged.path)
+            return staged
+        } catch (error: Exception) {
+            staged.delete()
+            throw error
+        }
+    }
+
+    private fun submitVerifiedApk(staged: File): String {
+        clearPendingUpdate()
+        try {
+            val params = PackageInstaller.SessionParams(PackageInstaller.SessionParams.MODE_FULL_INSTALL)
+            params.setAppPackageName(packageName)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                params.setInstallReason(PackageManager.INSTALL_REASON_USER)
+            }
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                params.setRequireUserAction(
+                    PackageInstaller.SessionParams.USER_ACTION_NOT_REQUIRED
+                )
+            }
+            val installer = packageManager.packageInstaller
+            val sessionId = installer.createSession(params)
+            try {
+                installer.openSession(sessionId).use { session ->
+                    FileInputStream(staged).use { input ->
+                        session.openWrite("rustdesk-update.apk", 0, staged.length()).use { output ->
+                            input.copyTo(output)
+                            session.fsync(output)
+                        }
+                    }
+                    val statusIntent = Intent(this, UpdateInstallReceiver::class.java).apply {
+                        action = UpdateInstallReceiver.ACTION_UPDATE_INSTALL_STATUS
+                        data = Uri.parse("rustdesk-update://session/$sessionId")
+                        putExtra(UpdateInstallReceiver.EXTRA_STAGED_APK, staged.path)
+                    }
+                    val flags = PendingIntent.FLAG_UPDATE_CURRENT or
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                            PendingIntent.FLAG_MUTABLE
+                        } else {
+                            0
+                        }
+                    val status = PendingIntent.getBroadcast(this, sessionId, statusIntent, flags)
+                    emitUpdateInstallStatus(this, STATUS_INSTALLING, "")
+                    session.commit(status.intentSender)
+                }
+            } catch (error: Exception) {
+                runCatching { installer.abandonSession(sessionId) }
+                throw error
+            }
+            return STATUS_INSTALLING
+        } catch (error: UnsupportedOperationException) {
+            openLegacyInstaller(staged)
+            return UpdateInstallReceiver.STATUS_CONFIRMATION_REQUIRED
+        }
+    }
+
+    private fun openLegacyInstaller(staged: File) {
+        val uri = FileProvider.getUriForFile(
+            this,
+            "$packageName.update-files",
+            staged
+        )
+        emitUpdateInstallStatus(
+            this,
+            UpdateInstallReceiver.STATUS_CONFIRMATION_REQUIRED,
+            ""
+        )
+        runOnUiThread {
+            try {
+                startActivity(Intent(Intent.ACTION_VIEW).apply {
+                    setDataAndType(uri, "application/vnd.android.package-archive")
+                    addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                })
+            } catch (error: Exception) {
+                Log.e(logTag, "Unable to open legacy package installer", error)
+                staged.delete()
+                emitUpdateInstallStatus(
+                    this,
+                    UpdateInstallReceiver.STATUS_FAILED,
+                    "open_package_installer_failed"
+                )
+            }
+        }
+    }
+
+    private fun rememberPendingUpdate(staged: File) {
+        getSharedPreferences(KEY_SHARED_PREFERENCES, MODE_PRIVATE)
+            .edit()
+            .putString(KEY_PENDING_UPDATE_APK, staged.path)
+            .apply()
+    }
+
+    private fun clearPendingUpdate() {
+        getSharedPreferences(KEY_SHARED_PREFERENCES, MODE_PRIVATE)
+            .edit()
+            .remove(KEY_PENDING_UPDATE_APK)
+            .apply()
+    }
+
+    private fun readUpdateInstallStatus(): Map<String, String> {
+        val prefs = getSharedPreferences(KEY_SHARED_PREFERENCES, MODE_PRIVATE)
+        return mapOf(
+            "status" to prefs.getString(KEY_UPDATE_INSTALL_STATUS, "idle").orEmpty(),
+            "error" to prefs.getString(KEY_UPDATE_INSTALL_ERROR, "").orEmpty()
+        )
+    }
+
+    private fun clearUpdateInstallStatus(): Boolean {
+        val prefs = getSharedPreferences(KEY_SHARED_PREFERENCES, MODE_PRIVATE)
+        val status = prefs.getString(KEY_UPDATE_INSTALL_STATUS, "").orEmpty()
+        if (status != UpdateInstallReceiver.STATUS_INSTALLED &&
+            status != UpdateInstallReceiver.STATUS_FAILED
+        ) {
+            return false
+        }
+        prefs.edit()
+            .remove(KEY_UPDATE_INSTALL_STATUS)
+            .remove(KEY_UPDATE_INSTALL_ERROR)
+            .apply()
+        return true
     }
 
     private fun onVoiceCallStarted() {

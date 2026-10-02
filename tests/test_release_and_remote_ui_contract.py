@@ -151,7 +151,8 @@ class ReleaseAndRemoteUiContractTest(unittest.TestCase):
         self.assertIn("fn report_command_update_event(", updater)
         for status in ("downloaded", "installing"):
             self.assertIn(f'report_command_update_event(command, "{status}", "")', updater)
-        self.assertIn('report_update_command_event(&state.command, status, error_code)', updater)
+        self.assertIn("fn report_pending_update_terminal_with_error(", updater)
+        self.assertIn("persist_and_report_update_command_terminal(", updater)
 
     def test_installed_updates_relaunch_windows_and_macos_clients(self):
         windows = (ROOT / "src/updater.rs").read_text()
@@ -161,29 +162,98 @@ class ReleaseAndRemoteUiContractTest(unittest.TestCase):
         self.assertIn('launchctl asuser <uid> open -n -a /Applications/RustDesk.app/', macos)
         self.assertIn('write_result installed', macos)
 
-    def test_verified_update_command_is_desktop_only(self):
+    def test_verified_update_command_supports_android_but_not_ios(self):
         source = (ROOT / "src/flutter_ffi.rs").read_text()
         command = source[source.index('if _key == "install-verified-update"') - 100 :]
         command = command[: command.index("return;", command.index("manually_check_update"))]
 
-        self.assertIn(
-            '#[cfg(not(any(target_os = "android", target_os = "ios")))]',
-            command,
-        )
+        self.assertIn('#[cfg(not(target_os = "ios"))]', command)
+        self.assertNotIn('target_os = "android"', command)
 
-    def test_update_device_auth_is_desktop_only(self):
+    def test_android_update_checks_send_exact_apk_identity_and_device_auth(self):
         source = (ROOT / "src/common.rs").read_text()
         auth = source[source.index("let auth = crate::updater::update_device_auth_headers") - 100 :]
         auth = auth[: auth.index("let proxy_conf")]
 
-        self.assertIn(
-            '#[cfg(not(any(target_os = "android", target_os = "ios")))]',
-            auth,
-        )
-        self.assertIn(
-            '#[cfg(not(any(target_os = "android", target_os = "ios")))]',
-            source[source.index("let build_request") : source.index("let latest_release_response")],
-        )
+        self.assertIn('#[cfg(not(target_os = "ios"))]', auth)
+        self.assertNotIn('target_os = "android"', auth)
+        request = source[source.index("let (target_key, package_kind)") : source.index("let identity")]
+        self.assertIn('#[cfg(not(target_os = "ios"))]', request)
+        self.assertNotIn('target_os = "android"', request)
+
+        updater = (ROOT / "src/updater.rs").read_text()
+        self.assertIn('#[cfg(target_os = "android")]\nfn update_target_kind()', updater)
+        self.assertIn('Ok("apk")', updater)
+
+    def test_android_starts_realtime_update_policy_and_opens_verified_apk(self):
+        ffi = (ROOT / "src/flutter_ffi.rs").read_text()
+        initializer = ffi[ffi.index("fn initialize(") : ffi.index("pub fn set_cur_session_id")]
+        self.assertIn('#[cfg(not(target_os = "ios"))]\n    crate::updater::start_auto_update();', initializer)
+
+        updater = (ROOT / "src/updater.rs").read_text()
+        self.assertIn('"android_update_ready"', updater)
+        android = (ROOT / "flutter/android/app/src/main/kotlin/com/carriez/flutter_hbb/MainActivity.kt").read_text()
+        self.assertIn('"install_verified_apk"', android)
+        self.assertIn("FileProvider.getUriForFile", android)
+
+        common = (ROOT / "flutter/lib/common.dart").read_text()
+        self.assertIn("Future<void> startAndroidVerifiedUpdate(", common)
+        self.assertIn("gFFI.invokeMethod('install_verified_apk', event)", common)
+        self.assertIn("kAndroidUpdateInstallResult", common)
+        self.assertIn("requestOrigin == 'system'", common)
+        app = (ROOT / "flutter/lib/main.dart").read_text()
+        self.assertIn("if (isAndroid ||", app)
+        self.assertIn("WidgetsBinding.instance.lifecycleState != AppLifecycleState.resumed", app)
+        self.assertIn("void didChangeAppLifecycleState(AppLifecycleState state)", app)
+        mobile = (ROOT / "flutter/lib/mobile/pages/server_page.dart").read_text()
+        self.assertIn('case "on_android_update_install_status":', mobile)
+        self.assertIn("isAndroidUpdateInstallTerminal(status)", mobile)
+        self.assertIn("clear_update_install_status", mobile)
+
+    def test_android_cold_start_polls_durable_install_state_before_clearing(self):
+        app = (ROOT / "flutter/lib/main.dart").read_text()
+        mobile = (ROOT / "flutter/lib/mobile/pages/server_page.dart").read_text()
+        common = (ROOT / "flutter/lib/common.dart").read_text()
+        ffi = (ROOT / "src/flutter_ffi.rs").read_text()
+        updater = (ROOT / "src/updater.rs").read_text()
+
+        self.assertLess(app.index("androidChannelInit();"), app.index("checkUpdate();", app.index("void runMobileApp")))
+        self.assertIn("get_update_install_status", mobile)
+        self.assertIn("consumeAndroidUpdateInstallStatus", mobile)
+        self.assertIn("pending-android-update-ready", common)
+        self.assertIn("pending-android-update-state", mobile)
+        self.assertIn("pending_android_update_ready", ffi)
+        self.assertIn("PendingAndroidUpdate", updater)
+        self.assertIn("android_terminal_report_should_clear", updater)
+
+    def test_android_about_owns_all_update_controls(self):
+        mobile = (ROOT / "flutter/lib/mobile/pages/settings_page.dart").read_text()
+        about = mobile[mobile.index('title: Text(translate("About"))') : mobile.index("return settings;")]
+        self.assertIn("StandardAboutUpdateControls(", about)
+        self.assertIn("kOptionEnableCheckUpdate", about)
+        self.assertIn("kOptionAllowAutoUpdate", about)
+        self.assertIn("kOptionEnableScheduledUpdate", about)
+        self.assertIn("mainStartSoftwareUpdateCheck", mobile)
+
+        enhancements = mobile[mobile.index("enhancementsTiles.add") : mobile.index("defaultDisplaySection()")]
+        self.assertNotIn("kOptionEnableCheckUpdate", enhancements)
+
+    def test_background_update_scheduler_has_one_retry_path_and_policy_gate(self):
+        updater = (ROOT / "src/updater.rs").read_text()
+
+        self.assertNotIn("fn schedule_update_check_retry", updater)
+        self.assertIn("if background_update_enabled()", updater)
+        self.assertIn("if scheduled_update_interval().is_none()", updater)
+        self.assertIn("wait_for_mac_schedule_change(&schedule_rx, next_delay)", updater)
+
+    def test_android_remote_monitor_menu_uses_official_per_display_switching(self):
+        source = (ROOT / "flutter/lib/mobile/pages/remote_page.dart").read_text()
+        monitor_menu = source[source.index("void showOptions(") : source.index("List<TRadioMenu<String>> viewStyleRadios")]
+
+        self.assertNotIn("translate('All displays')", monitor_menu)
+        self.assertNotIn("openMonitorInTheSameTab(kAllDisplayValue", monitor_menu)
+        self.assertIn("pi.currentDisplay != kAllDisplayValue", monitor_menu)
+        self.assertIn("openMonitorInTheSameTab(i, gFFI, pi)", monitor_menu)
 
     def test_macos_detached_update_preserves_command_id(self):
         source = (ROOT / "src/platform/macos.rs").read_text()

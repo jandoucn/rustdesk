@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_hbb/common.dart';
 import 'package:flutter_hbb/models/model.dart';
+import 'package:flutter_hbb/models/input_model.dart';
 import 'package:flutter_hbb/models/peer_tab_model.dart';
 import 'package:flutter_hbb/common/widgets/setting_widgets.dart';
 import 'package:flutter_hbb/consts.dart';
@@ -29,6 +30,60 @@ void main() {
       showVirtualMouseFromStoredOption(value: '', android: false),
       isFalse,
     );
+  });
+
+  test('display topology removal falls back to the only remaining display', () {
+    expect(
+      normalizedDisplayIndexAfterTopologyChange(
+        currentDisplay: 1,
+        serverDisplay: 0,
+        displayCount: 1,
+      ),
+      0,
+    );
+    expect(
+      normalizedDisplayIndexAfterTopologyChange(
+        currentDisplay: 7,
+        serverDisplay: 1,
+        displayCount: 2,
+      ),
+      1,
+    );
+  });
+
+  test('display topology keeps all-display and valid selections', () {
+    expect(
+      normalizedDisplayIndexAfterTopologyChange(
+        currentDisplay: kAllDisplayValue,
+        serverDisplay: 0,
+        displayCount: 2,
+      ),
+      kAllDisplayValue,
+    );
+    expect(
+      normalizedDisplayIndexAfterTopologyChange(
+        currentDisplay: 1,
+        serverDisplay: 0,
+        displayCount: 2,
+      ),
+      1,
+    );
+  });
+
+  test('Android pointer coordinates reach the selected macOS secondary display', () {
+    final secondary = Rect.fromLTRB(-1920, 0, 0, 1080);
+
+    final secondaryPoint = InputModel.getPointInRemoteRect(
+      true,
+      kPeerPlatformMacOS,
+      kPointerEventKindMouse,
+      '',
+      -960,
+      540,
+      secondary,
+    );
+    expect(secondaryPoint?.x, -960);
+    expect(secondaryPoint?.y, 540);
   });
 
   test('Android uses the same restricted peer tabs as desktop', () {
@@ -133,6 +188,15 @@ void main() {
         windowVisible: true,
         autoUpdate: false,
         requestOrigin: 'startup',
+        updateUrl: 'https://download.example/update.exe',
+      ),
+      isTrue,
+    );
+    expect(
+      shouldShowDesktopUpdatePrompt(
+        windowVisible: true,
+        autoUpdate: false,
+        requestOrigin: 'system',
         updateUrl: 'https://download.example/update.exe',
       ),
       isTrue,
@@ -274,6 +338,30 @@ void main() {
     );
   });
 
+  test('Android install states only finish on installed or failed', () {
+    expect(
+      androidUpdateInstallStatus(status: 'permission_required'),
+      'Installation permission required',
+    );
+    expect(
+      androidUpdateInstallStatus(status: 'confirmation_required'),
+      'Installation confirmation required',
+    );
+    expect(
+      androidUpdateInstallStatus(status: 'installing'),
+      'Installing update',
+    );
+    expect(isAndroidUpdateInstallTerminal('permission_required'), isFalse);
+    expect(isAndroidUpdateInstallTerminal('confirmation_required'), isFalse);
+    expect(isAndroidUpdateInstallTerminal('installing'), isFalse);
+    expect(isAndroidUpdateInstallTerminal('installed'), isTrue);
+    expect(isAndroidUpdateInstallTerminal('failed'), isTrue);
+    expect(
+      androidUpdateInstallStatus(status: 'failed', error: 'blocked'),
+      'blocked',
+    );
+  });
+
   test('local update metadata is available before the first server check', () {
     final metadata = parseLocalUpdateMetadata(
       '{"version":"1.5.0","build_seq":2026093006,"channel":"stable"}',
@@ -341,5 +429,43 @@ void main() {
     expect(scheduled, isTrue);
     expect(intervalHours, 6);
     expect(checks, 0);
+  });
+
+  testWidgets('Android About update controls fit a phone and start a check',
+      (tester) async {
+    var checks = 0;
+
+    await tester.pumpWidget(MaterialApp(
+      home: MediaQuery(
+        data: const MediaQueryData(size: Size(360, 800)),
+        child: Material(
+          child: SingleChildScrollView(
+            child: StandardAboutUpdateControls(
+              currentVersion: '1.5.1',
+              latestVersion: '',
+              currentBuildSeq: '2026100202',
+              channel: 'stable',
+              checkOnStartup: false,
+              autoUpdate: false,
+              scheduledUpdate: false,
+              scheduledUpdateIntervalHours: 5,
+              onCheckOnStartupChanged: (_) async {},
+              onAutoUpdateChanged: (_) async {},
+              onScheduledUpdateChanged: (_) async {},
+              onScheduledUpdateIntervalChanged: (_) async {},
+              onCheckUpdate: () async => checks++,
+              translator: (value) => value,
+            ),
+          ),
+        ),
+      ),
+    ));
+
+    expect(tester.takeException(), isNull);
+    expect(find.textContaining('2026100202'), findsOneWidget);
+    expect(find.text('Not checked'), findsOneWidget);
+    await tester.tap(find.text('Check for updates'));
+    await tester.pump();
+    expect(checks, 1);
   });
 }

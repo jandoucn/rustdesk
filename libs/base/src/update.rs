@@ -9,7 +9,7 @@ pub enum UpdateAction {
     AutoInstall,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde_derive::Deserialize, serde_derive::Serialize)]
 pub enum UpdateSource {
     Primary,
     Mirror,
@@ -770,7 +770,7 @@ mod policy_contract_tests {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde_derive::Deserialize, serde_derive::Serialize)]
 pub struct PendingUpdateEvent {
     pub transaction_id: String,
     pub from_version: String,

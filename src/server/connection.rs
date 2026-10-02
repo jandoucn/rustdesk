@@ -6736,23 +6736,14 @@ impl Retina {
         current: usize,
         mut contains: impl FnMut(&DisplayInfo) -> bool,
     ) -> Option<&DisplayInfo> {
-        if let Some(display) = self
+        let display = self
             .selected_display_name
             .as_ref()
             .and_then(|name| self.displays.iter().find(|display| display.name == *name))
-        {
-            if contains(display) {
-                return Some(display);
-            }
-        } else if let Some(display) = self.displays.get(current) {
-            if contains(display) {
-                return Some(display);
-            }
-        }
+            .or_else(|| self.displays.get(current))
+            .or_else(|| (self.displays.len() == 1).then(|| &self.displays[0]))?;
 
-        let mut matches = self.displays.iter().filter(|display| contains(display));
-        let display = matches.next()?;
-        matches.next().is_none().then_some(display)
+        contains(display).then_some(display)
     }
 
     #[inline]
@@ -7616,10 +7607,11 @@ mod test {
 
     #[cfg(target_os = "macos")]
     #[test]
-    fn retina_mouse_event_uses_display_containing_the_pointer() {
+    fn retina_mouse_event_stays_bound_to_selected_secondary_display() {
         let mut retina = Retina {
             displays: vec![
                 DisplayInfo {
+                    name: "primary".to_owned(),
                     x: 0,
                     y: 0,
                     width: 2000,
@@ -7628,6 +7620,7 @@ mod test {
                     ..Default::default()
                 },
                 DisplayInfo {
+                    name: "secondary".to_owned(),
                     x: 1000,
                     y: 0,
                     width: 2560,
@@ -7638,32 +7631,34 @@ mod test {
             ],
             ..Default::default()
         };
+        retina.select_display(1);
         let mut mouse = MouseEvent {
-            x: 2280,
-            y: 720,
+            x: 1500,
+            y: 600,
             ..Default::default()
         };
 
         retina.on_mouse_event(&mut mouse, 0);
 
-        assert_eq!((mouse.x, mouse.y), (1640, 360));
+        assert_eq!((mouse.x, mouse.y), (1250, 300));
 
         let pos = CursorPosition {
-            x: 1640,
-            y: 360,
+            x: 1250,
+            y: 300,
             ..Default::default()
         };
         let msg = retina.on_cursor_pos(&pos, 0).unwrap();
         let pos = msg.cursor_position();
-        assert_eq!((pos.x, pos.y), (2280, 720));
+        assert_eq!((pos.x, pos.y), (1500, 600));
     }
 
     #[cfg(target_os = "macos")]
     #[test]
-    fn retina_mouse_event_supports_negative_secondary_display_origin() {
+    fn retina_mouse_event_does_not_cross_to_an_unselected_display() {
         let mut retina = Retina {
             displays: vec![
                 DisplayInfo {
+                    name: "primary".to_owned(),
                     x: 0,
                     y: 0,
                     width: 2000,
@@ -7672,6 +7667,45 @@ mod test {
                     ..Default::default()
                 },
                 DisplayInfo {
+                    name: "secondary".to_owned(),
+                    x: 2000,
+                    y: 0,
+                    width: 2560,
+                    height: 1440,
+                    scale: 2.0,
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        };
+        retina.select_display(0);
+        let mut mouse = MouseEvent {
+            x: 2500,
+            y: 600,
+            ..Default::default()
+        };
+
+        retina.on_mouse_event(&mut mouse, 0);
+
+        assert_eq!((mouse.x, mouse.y), (2500, 600));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn retina_mouse_event_supports_negative_secondary_display_origin() {
+        let mut retina = Retina {
+            displays: vec![
+                DisplayInfo {
+                    name: "primary".to_owned(),
+                    x: 0,
+                    y: 0,
+                    width: 2000,
+                    height: 1200,
+                    scale: 2.0,
+                    ..Default::default()
+                },
+                DisplayInfo {
+                    name: "secondary".to_owned(),
                     x: -1280,
                     y: -200,
                     width: 2560,
@@ -7682,6 +7716,7 @@ mod test {
             ],
             ..Default::default()
         };
+        retina.select_display(1);
         let mut mouse = MouseEvent {
             x: -640,
             y: 300,

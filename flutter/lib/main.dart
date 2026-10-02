@@ -176,8 +176,9 @@ void runMainApp(bool startService) async {
 
 void runMobileApp() async {
   await initEnv(kAppTypeMain);
+  if (isAndroid) await androidChannelInit();
   checkUpdate();
-  if (isAndroid) androidChannelInit();
+  if (isAndroid) await consumePendingAndroidUpdateReady();
   if (isAndroid) platformFFI.syncAndroidServiceAppDirConfigPath();
   draggablePositions.load();
   await Future.wait([gFFI.abModel.loadCache(), gFFI.groupModel.loadCache()]);
@@ -405,9 +406,10 @@ class _AppState extends State<App> with WidgetsBindingObserver, WindowListener {
     if (isDesktop && desktopType == DesktopType.main) {
       windowManager.addListener(this);
     }
-    if (isDesktop &&
-        desktopType == DesktopType.main &&
-        (isWindows || isMacOS)) {
+    if (isAndroid ||
+        (isDesktop &&
+            desktopType == DesktopType.main &&
+            (isWindows || isMacOS))) {
       _startupUpdateWorker = ever(
         updateUiState.checkResultSerial,
         (_) {
@@ -463,8 +465,14 @@ class _AppState extends State<App> with WidgetsBindingObserver, WindowListener {
   }
 
   Future<void> _consumePendingDesktopUpdatePrompt() async {
-    if (!isDesktop || desktopType != DesktopType.main) return;
-    if (!await windowManager.isVisible()) return;
+    if (isAndroid) {
+      if (WidgetsBinding.instance.lifecycleState != AppLifecycleState.resumed) {
+        return;
+      }
+    } else {
+      if (!isDesktop || desktopType != DesktopType.main) return;
+      if (!await windowManager.isVisible()) return;
+    }
     _handleDesktopUpdateResult();
   }
 
@@ -521,6 +529,13 @@ class _AppState extends State<App> with WidgetsBindingObserver, WindowListener {
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (mounted) _showStartupUpdatePrompt(updateUiState.updateUrl.value);
     });
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      _consumePendingDesktopUpdatePrompt();
+    }
   }
 
   @override

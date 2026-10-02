@@ -1431,8 +1431,22 @@ class FfiModel with ChangeNotifier {
       }
       _pi.displays.value = newDisplays;
       _pi.displaysCount.value = _pi.displays.length;
-      if (_pi.currentDisplay < _pi.displays.length) {
-        // now replaced to _updateCurDisplay
+      final normalizedDisplay = normalizedDisplayIndexAfterTopologyChange(
+        currentDisplay: _pi.currentDisplay,
+        serverDisplay: currentDisplay,
+        displayCount: _pi.displays.length,
+      );
+      if (normalizedDisplay != _pi.currentDisplay) {
+        _pi.currentDisplay = normalizedDisplay;
+        try {
+          CurrentDisplayState.find(peerId).value = normalizedDisplay;
+        } catch (error) {
+          debugPrint('Failed to synchronize current display state: $error');
+        }
+      }
+      if (_pi.currentDisplay == kAllDisplayValue ||
+          (_pi.currentDisplay >= 0 &&
+              _pi.currentDisplay < _pi.displays.length)) {
         updateCurDisplay(sessionId);
       }
       // After reconnecting, restore the last selected monitor once the canvas is ready.
@@ -4517,6 +4531,23 @@ class Features {
 }
 
 const kInvalidDisplayIndex = -1;
+
+int normalizedDisplayIndexAfterTopologyChange({
+  required int currentDisplay,
+  required int serverDisplay,
+  required int displayCount,
+}) {
+  if (currentDisplay == kAllDisplayValue || displayCount <= 0) {
+    return currentDisplay;
+  }
+  if (currentDisplay >= 0 && currentDisplay < displayCount) {
+    return currentDisplay;
+  }
+  if (serverDisplay >= 0 && serverDisplay < displayCount) {
+    return serverDisplay;
+  }
+  return 0;
+}
 
 class PeerInfo with ChangeNotifier {
   String version = '';

@@ -37,6 +37,7 @@ pub const OPTION_UPDATE_POLICY_REVISION: &str = "update-policy-revision";
 pub const OPTION_UPDATE_POLICY_CLIENT_UUID: &str = "update-policy-client-uuid";
 pub const OPTION_PENDING_UPDATE_COMMANDS: &str = "pending-update-commands";
 pub const OPTION_PROCESSED_UPDATE_COMMANDS: &str = "processed-update-commands";
+pub const OPTION_PENDING_ANDROID_UPDATE: &str = "pending-android-update";
 pub const OPTION_SYNC_AB_WITH_RECENT_SESSIONS: &str = "sync-ab-with-recent-sessions";
 pub const OPTION_SYNC_AB_TAGS: &str = "sync-ab-tags";
 pub const OPTION_FILTER_AB_BY_INTERSECTION: &str = "filter-ab-by-intersection";

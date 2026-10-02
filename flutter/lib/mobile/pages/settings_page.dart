@@ -5,6 +5,7 @@ import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:flutter_hbb/common/widgets/setting_widgets.dart';
 import 'package:flutter_hbb/desktop/pages/desktop_setting_page.dart';
+import 'package:flutter_hbb/desktop/widgets/update_progress.dart';
 import 'package:get/get.dart';
 import 'package:provider/provider.dart';
 import 'package:settings_ui/settings_ui.dart';
@@ -71,7 +72,6 @@ class _SettingsState extends State<SettingsPage> with WidgetsBindingObserver {
       false; //androidVersion >= 26; // remove because not work on every device
   var _ignoreBatteryOpt = false;
   var _enableStartOnBoot = false;
-  var _checkUpdateOnStartup = false;
   var _showTerminalExtraKeys = false;
   var _floatingWindowDisabled = false;
   var _keepScreenOn = KeepScreenOn.duringControlled; // relay on floating window
@@ -106,6 +106,13 @@ class _SettingsState extends State<SettingsPage> with WidgetsBindingObserver {
   var _isUsingPublicServer = false;
   var _allowAskForNoteAtEndOfConnection = false;
   var _preventSleepWhileConnected = true;
+  var _manualCheckRequestId = '';
+  var _updateMetadata = const LocalUpdateMetadata(
+    version: '',
+    buildSeq: '',
+    channel: '',
+  );
+  Worker? _checkResultWorker;
 
   _SettingsState() {
     _enableAbr = option2bool(
@@ -159,6 +166,21 @@ class _SettingsState extends State<SettingsPage> with WidgetsBindingObserver {
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
+    _checkResultWorker = ever(updateUiState.checkResultSerial, (_) {
+      if (!mounted ||
+          !isMatchingManualUpdateCheck(
+            pendingRequestId: _manualCheckRequestId,
+            requestOrigin: updateUiState.requestOrigin.value,
+            requestId: updateUiState.requestId.value,
+          )) {
+        return;
+      }
+      setState(() => _manualCheckRequestId = '');
+      _showManualUpdateResult(
+        url: updateUiState.updateUrl.value,
+        error: updateUiState.error.value,
+      );
+    });
 
     WidgetsBinding.instance.addPostFrameCallback((_) async {
       var update = false;
@@ -186,13 +208,6 @@ class _SettingsState extends State<SettingsPage> with WidgetsBindingObserver {
       if (enableStartOnBoot != _enableStartOnBoot) {
         update = true;
         _enableStartOnBoot = enableStartOnBoot;
-      }
-
-      var checkUpdateOnStartup =
-          mainGetLocalBoolOptionSync(kOptionEnableCheckUpdate);
-      if (checkUpdateOnStartup != _checkUpdateOnStartup) {
-        update = true;
-        _checkUpdateOnStartup = checkUpdateOnStartup;
       }
 
       var floatingWindowDisabled =
@@ -230,6 +245,19 @@ class _SettingsState extends State<SettingsPage> with WidgetsBindingObserver {
         _myId = myId;
       }
 
+      try {
+        final updateMetadata =
+            parseLocalUpdateMetadata(await bind.mainGetUpdateMetadata());
+        if (_updateMetadata.version != updateMetadata.version ||
+            _updateMetadata.buildSeq != updateMetadata.buildSeq ||
+            _updateMetadata.channel != updateMetadata.channel) {
+          update = true;
+          _updateMetadata = updateMetadata;
+        }
+      } catch (error) {
+        debugPrint('Failed to read update metadata: $error');
+      }
+
       final isUsingPublicServer = await bind.mainIsUsingPublicServer();
       if (_isUsingPublicServer != isUsingPublicServer) {
         update = true;
@@ -244,8 +272,73 @@ class _SettingsState extends State<SettingsPage> with WidgetsBindingObserver {
 
   @override
   void dispose() {
+    _checkResultWorker?.dispose();
     WidgetsBinding.instance.removeObserver(this);
     super.dispose();
+  }
+
+  Future<void> _showUpdateConfirmation(String url) async {
+    final accepted = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Text(translate('Software update')),
+        content: Text(translate('A new version is available. Update now?')),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: Text(translate('Cancel')),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: Text(translate('Update')),
+          ),
+        ],
+      ),
+    );
+    if (accepted == true) {
+      handleUpdate(url);
+    }
+  }
+
+  Future<void> _showManualUpdateResult({
+    required String url,
+    required String error,
+  }) async {
+    final kind = manualUpdateResultKind(error: error, updateUrl: url);
+    if (kind == ManualUpdateResultKind.updateAvailable) {
+      await _showUpdateConfirmation(url);
+      return;
+    }
+    if (!mounted) return;
+    await showDialog<void>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Text(translate('Software update')),
+        content: Text(
+          kind == ManualUpdateResultKind.error
+              ? error
+              : translate('Up to date'),
+        ),
+        actions: [
+          FilledButton(
+            onPressed: () => Navigator.pop(context),
+            child: Text(translate('OK')),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _checkForUpdates() async {
+    if (_manualCheckRequestId.isNotEmpty) return;
+    final requestId = 'manual-${DateTime.now().microsecondsSinceEpoch}';
+    setState(() => _manualCheckRequestId = requestId);
+    stateGlobal.updateStatus.value = softwareUpdateCheckStatus(
+      error: '',
+      updateUrl: '',
+      checking: true,
+    );
+    await bind.mainStartSoftwareUpdateCheck(requestId: requestId);
   }
 
   @override
@@ -628,22 +721,6 @@ class _SettingsState extends State<SettingsPage> with WidgetsBindingObserver {
 
           gFFI.invokeMethod(AndroidChannel.kSetStartOnBootOpt, toValue);
         }));
-
-    if (!bind.isCustomClient()) {
-      enhancementsTiles.add(
-        SettingsTile.switchTile(
-          initialValue: _checkUpdateOnStartup,
-          title:
-              Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-            Text(translate('Check for software update on startup')),
-          ]),
-          onToggle: (bool toValue) async {
-            await mainSetLocalBoolOption(kOptionEnableCheckUpdate, toValue);
-            setState(() => _checkUpdateOnStartup = toValue);
-          },
-        ),
-      );
-    }
 
     enhancementsTiles.add(
       SettingsTile.switchTile(
@@ -1060,6 +1137,61 @@ class _SettingsState extends State<SettingsPage> with WidgetsBindingObserver {
                   child: Text(_myId),
                 ),
                 leading: Icon(Icons.perm_identity)),
+            if (isAndroid &&
+                bind.mainGetBuildinOption(key: 'sos-mode') != 'Y')
+              SettingsTile(
+                title: Obx(() {
+                  updateUiState.policyRevision.value;
+                  final latestVersion =
+                      updateUiState.targetVersion.value.isEmpty
+                          ? bind.mainGetNewVersion()
+                          : updateUiState.targetVersion.value;
+                  final currentVersion =
+                      updateUiState.currentVersion.value.isEmpty
+                          ? _updateMetadata.version
+                          : updateUiState.currentVersion.value;
+                  final status = updateUiState.error.value.isNotEmpty
+                      ? updateUiState.error.value
+                      : stateGlobal.updateStatus.value;
+                  return StandardAboutUpdateControls(
+                    currentVersion:
+                        currentVersion.isEmpty ? version : currentVersion,
+                    latestVersion: latestVersion,
+                    currentBuildSeq:
+                        updateUiState.currentBuildSeq.value.isEmpty
+                            ? _updateMetadata.buildSeq
+                            : updateUiState.currentBuildSeq.value,
+                    latestBuildSeq: updateUiState.targetBuildSeq.value,
+                    channel: updateUiState.channel.value.isEmpty
+                        ? _updateMetadata.channel
+                        : updateUiState.channel.value,
+                    updateStatus: status,
+                    checking: _manualCheckRequestId.isNotEmpty,
+                    checkOnStartup:
+                        mainGetLocalBoolOptionSync(kOptionEnableCheckUpdate),
+                    autoUpdate:
+                        mainGetBoolOptionSync(kOptionAllowAutoUpdate),
+                    scheduledUpdate:
+                        mainGetBoolOptionSync(kOptionEnableScheduledUpdate),
+                    scheduledUpdateIntervalHours: scheduledUpdateIntervalHours(
+                      bind.mainGetOptionSync(
+                          key: kOptionScheduledUpdateIntervalHours),
+                    ),
+                    onCheckOnStartupChanged: (value) =>
+                        mainSetLocalBoolOption(kOptionEnableCheckUpdate, value),
+                    onAutoUpdateChanged: (value) =>
+                        mainSetBoolOption(kOptionAllowAutoUpdate, value),
+                    onScheduledUpdateChanged: (value) =>
+                        mainSetBoolOption(kOptionEnableScheduledUpdate, value),
+                    onScheduledUpdateIntervalChanged: (value) =>
+                        bind.mainSetOption(
+                      key: kOptionScheduledUpdateIntervalHours,
+                      value: '$value',
+                    ),
+                    onCheckUpdate: _checkForUpdates,
+                  );
+                }),
+              ),
             SettingsTile(
               title: Text(translate("Privacy Statement")),
               onPressed: (context) =>

@@ -71,9 +71,6 @@ static POLICY_STREAM_STARTED: AtomicBool = AtomicBool::new(false);
 /// Initial wait after startup before the first update check (30 seconds).
 pub const INITIAL_CHECK_DELAY: Duration = Duration::from_secs(30);
 
-/// Legacy macOS root updater interval.
-pub const DUR_ONE_DAY: Duration = Duration::from_secs(60 * 60 * 24);
-
 /// Minimum interval between consecutive update checks (10 minutes).
 pub const MIN_INTERVAL: Duration = Duration::from_secs(60 * 10);
 
@@ -799,6 +796,68 @@ mod policy_stream_tests {
     }
 
     #[test]
+    fn android_install_status_only_completes_on_terminal_callback() {
+        assert_eq!(
+            android_install_terminal_status("installed"),
+            Some("installed")
+        );
+        assert_eq!(android_install_terminal_status("failed"), Some("failed"));
+        assert_eq!(android_install_terminal_status("installing"), None);
+        assert_eq!(android_install_terminal_status("permission_required"), None);
+    }
+
+    #[test]
+    fn android_pending_install_survives_missing_flutter_and_failed_reporting() {
+        let pending = PendingAndroidUpdate {
+            event: PendingUpdateEvent {
+                transaction_id: "0123456789abcdef0123456789abcdef".to_owned(),
+                from_version: "1.5.1".to_owned(),
+                from_build_seq: 2026100202,
+                version: "1.5.2".to_owned(),
+                build_seq: 2026100203,
+                source: UpdateSource::Primary,
+                command_id: Some("cmd-android-1".to_owned()),
+            },
+            path: "/private/update.apk".to_owned(),
+            terminal_status: String::new(),
+            error_code: String::new(),
+        };
+        let encoded = serde_json::to_string(&pending).unwrap();
+
+        let ready = pending_android_update_ready_event(&encoded).unwrap();
+        assert_eq!(ready["path"], "/private/update.apk");
+        assert_eq!(ready["command_id"], "cmd-android-1");
+        assert!(!android_terminal_report_should_clear(false));
+        assert!(android_terminal_report_should_clear(true));
+    }
+
+    #[test]
+    fn android_terminal_state_blocks_duplicate_install_and_keeps_safe_error() {
+        let pending = PendingAndroidUpdate {
+            event: PendingUpdateEvent {
+                transaction_id: "0123456789abcdef0123456789abcdef".to_owned(),
+                from_version: "1.5.1".to_owned(),
+                from_build_seq: 2026100202,
+                version: "1.5.2".to_owned(),
+                build_seq: 2026100203,
+                source: UpdateSource::Primary,
+                command_id: None,
+            },
+            path: "/private/update.apk".to_owned(),
+            terminal_status: "failed".to_owned(),
+            error_code: "blocked:policy\nignored".to_owned(),
+        };
+        let encoded = serde_json::to_string(&pending).unwrap();
+
+        assert!(pending_android_update_ready_event(&encoded).is_none());
+        assert_eq!(
+            sanitize_android_install_error("blocked:policy\nignored"),
+            "blocked:policyignored"
+        );
+        assert_eq!(sanitize_android_install_error(""), "install_failed");
+    }
+
+    #[test]
     fn device_auth_headers_sign_the_exact_request_body() {
         let identity = base::update::UpdateClientIdentity {
             client_id: "83077683".to_owned(),
@@ -929,9 +988,10 @@ fn start_auto_update_check_(rx_msg: Receiver<UpdateMsg>) {
                 );
             }
             Ok(UpdateMsg::ConnectivityRestored) => {
-                if last_check_time
-                    .map(|value: Instant| value.elapsed() >= MIN_INTERVAL)
-                    .unwrap_or(true)
+                if background_update_enabled()
+                    && last_check_time
+                        .map(|value: Instant| value.elapsed() >= MIN_INTERVAL)
+                        .unwrap_or(true)
                 {
                     run_update_check(
                         false,
@@ -1036,6 +1096,19 @@ fn startup_update_enabled() -> bool {
     )))
 }
 
+fn should_check_on_connectivity_restored(check_on_startup: bool, scheduled_update: bool) -> bool {
+    check_on_startup || scheduled_update
+}
+
+fn background_update_enabled() -> bool {
+    should_check_on_connectivity_restored(
+        startup_update_enabled(),
+        update_option_enabled(&config::Config::get_option(
+            keys::OPTION_ENABLE_SCHEDULED_UPDATE,
+        )),
+    )
+}
+
 fn scheduled_update_interval() -> Option<Duration> {
     let hours = config::Config::get_option(keys::OPTION_SCHEDULED_UPDATE_INTERVAL_HOURS)
         .parse()
@@ -1066,7 +1139,6 @@ fn run_update_check(
     match check_update_request(manually, None, request_origin) {
         Ok(UpdateCommandRunOutcome::Deferred) => {
             *next_scheduled_check = Some(Instant::now() + DEFERRED_UPDATE_RETRY_INTERVAL);
-            schedule_update_check_retry(manually, DEFERRED_UPDATE_RETRY_INTERVAL);
         }
         Ok(_) => {
             *last_check_time = Some(Instant::now());
@@ -1075,22 +1147,8 @@ fn run_update_check(
         Err(err) => {
             log::error!("Error checking for updates: {err}");
             *next_scheduled_check = Some(Instant::now() + RETRY_INTERVAL);
-            schedule_update_check_retry(manually, RETRY_INTERVAL);
         }
     }
-}
-
-fn schedule_update_check_retry(manually: bool, delay: Duration) {
-    std::thread::spawn(move || {
-        std::thread::sleep(delay);
-        let sender = TX_MSG.lock().unwrap();
-        let message = if manually {
-            UpdateMsg::CheckUpdate
-        } else {
-            UpdateMsg::ConnectivityRestored
-        };
-        let _ = sender.send(message);
-    });
 }
 
 fn schedule_update_command_retry(command: UpdateCommand) {
@@ -1216,6 +1274,11 @@ fn check_update_request(
     }
     let should_install = action == UpdateAction::AutoInstall;
     let version = target_version;
+    if should_install && !has_no_active_conns() {
+        report_update_event("deferred", version, target_build_seq, "none");
+        report_command_update_event(command, "deferred", "active_session");
+        return Ok(UpdateCommandRunOutcome::Deferred);
+    }
     report_update_event("started", version, target_build_seq, "none");
     let (file_path, source) = match download_verified_target(manifest, &target_key, &target) {
         Ok(downloaded) => downloaded,
@@ -1289,6 +1352,19 @@ fn check_update_request(
                 remove_download_artifact(&file_path);
                 bail!("downloaded update path is not valid UTF-8");
             }
+            #[cfg(target_os = "android")]
+            if let Err(err) = request_android_update_install(
+                &file_path,
+                version,
+                target_build_seq,
+                source,
+                command.map(|value| value.command_id.clone()),
+            ) {
+                report_update_event("failed", version, target_build_seq, source);
+                report_command_update_event(command, "failed", "installer_unavailable");
+                remove_download_artifact(&file_path);
+                return Err(err);
+            }
         } else if should_install {
             report_update_event("deferred", version, target_build_seq, source);
             remove_download_artifact(&file_path);
@@ -1300,6 +1376,10 @@ fn check_update_request(
         return Ok(UpdateCommandRunOutcome::AwaitingInstallResult);
     }
     #[cfg(target_os = "macos")]
+    if should_install {
+        return Ok(UpdateCommandRunOutcome::AwaitingInstallResult);
+    }
+    #[cfg(target_os = "android")]
     if should_install {
         return Ok(UpdateCommandRunOutcome::AwaitingInstallResult);
     }
@@ -1347,9 +1427,177 @@ fn update_target_kind() -> ResultType<&'static str> {
     Ok("dmg")
 }
 
-#[cfg(not(any(target_os = "windows", target_os = "linux", target_os = "macos")))]
+#[cfg(target_os = "android")]
+fn update_target_kind() -> ResultType<&'static str> {
+    Ok("apk")
+}
+
+#[cfg(not(any(
+    target_os = "windows",
+    target_os = "linux",
+    target_os = "macos",
+    target_os = "android"
+)))]
 fn update_target_kind() -> ResultType<&'static str> {
     Ok("pkg")
+}
+
+#[cfg(target_os = "android")]
+fn request_android_update_install(
+    file_path: &Path,
+    version: &str,
+    build_seq: u64,
+    source: &str,
+    command_id: Option<String>,
+) -> ResultType<()> {
+    let path = file_path
+        .to_str()
+        .ok_or_else(|| hbb_common::anyhow::anyhow!("downloaded update path is not valid UTF-8"))?;
+    let pending = PendingUpdateEvent {
+        transaction_id: new_update_transaction_id(),
+        from_version: crate::VERSION.to_owned(),
+        from_build_seq: crate::BUILD_SEQ,
+        version: version.to_owned(),
+        build_seq,
+        source: if source == UpdateSource::Mirror.as_str() {
+            UpdateSource::Mirror
+        } else {
+            UpdateSource::Primary
+        },
+        command_id,
+    };
+    let pending = PendingAndroidUpdate {
+        event: pending,
+        path: path.to_owned(),
+        terminal_status: String::new(),
+        error_code: String::new(),
+    };
+    config::Config::set_option(
+        keys::OPTION_PENDING_ANDROID_UPDATE.to_owned(),
+        serde_json::to_string(&pending)?,
+    );
+    let event = serde_json::json!({
+        "name": "android_update_ready",
+        "path": path,
+        "version": version,
+        "build_seq": build_seq,
+        "source": source,
+        "command_id": pending.event.command_id,
+    });
+    let _ = crate::flutter::push_global_event(crate::flutter::APP_TYPE_MAIN, event.to_string());
+    Ok(())
+}
+
+#[cfg(any(test, target_os = "android"))]
+#[derive(Debug, serde::Deserialize, serde::Serialize)]
+struct PendingAndroidUpdate {
+    event: PendingUpdateEvent,
+    path: String,
+    #[serde(default)]
+    terminal_status: String,
+    #[serde(default)]
+    error_code: String,
+}
+
+#[cfg(any(test, target_os = "android"))]
+fn pending_android_update_ready_event(value: &str) -> Option<serde_json::Value> {
+    let pending: PendingAndroidUpdate = serde_json::from_str(value).ok()?;
+    if pending.path.is_empty() || !pending.terminal_status.is_empty() {
+        return None;
+    }
+    Some(serde_json::json!({
+        "name": "android_update_ready",
+        "path": pending.path,
+        "version": pending.event.version,
+        "build_seq": pending.event.build_seq,
+        "source": pending.event.source.as_str(),
+        "command_id": pending.event.command_id,
+    }))
+}
+
+#[cfg(target_os = "android")]
+pub fn pending_android_update_ready() -> String {
+    pending_android_update_ready_event(&config::Config::get_option(
+        keys::OPTION_PENDING_ANDROID_UPDATE,
+    ))
+    .map(|event| event.to_string())
+    .unwrap_or_default()
+}
+
+#[cfg(target_os = "android")]
+pub fn pending_android_update_state() -> String {
+    config::Config::get_option(keys::OPTION_PENDING_ANDROID_UPDATE)
+}
+
+#[cfg(any(test, target_os = "android"))]
+fn android_install_terminal_status(status: &str) -> Option<&'static str> {
+    match status {
+        "installed" => Some("installed"),
+        "failed" => Some("failed"),
+        _ => None,
+    }
+}
+
+#[cfg(any(test, target_os = "android"))]
+fn sanitize_android_install_error(value: &str) -> String {
+    let sanitized: String = value
+        .chars()
+        .filter(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-' | ':' | '.'))
+        .take(128)
+        .collect();
+    if sanitized.is_empty() {
+        "install_failed".to_owned()
+    } else {
+        sanitized
+    }
+}
+
+#[cfg(any(test, target_os = "android"))]
+fn android_terminal_report_should_clear(reported: bool) -> bool {
+    reported
+}
+
+#[cfg(target_os = "android")]
+pub fn complete_android_update_install(value: &str) -> ResultType<()> {
+    let result: serde_json::Value = serde_json::from_str(value)?;
+    let status = result
+        .get("status")
+        .and_then(|value| value.as_str())
+        .unwrap_or_default();
+    let Some(terminal_status) = android_install_terminal_status(status) else {
+        return Ok(());
+    };
+    let error_code = if terminal_status == "failed" {
+        sanitize_android_install_error(
+            result
+                .get("error")
+                .and_then(|value| value.as_str())
+                .unwrap_or_default(),
+        )
+    } else {
+        String::new()
+    };
+    let mut pending: PendingAndroidUpdate = serde_json::from_str(&config::Config::get_option(
+        keys::OPTION_PENDING_ANDROID_UPDATE,
+    ))
+    .map_err(|_| hbb_common::anyhow::anyhow!("pending Android update is missing"))?;
+    pending.terminal_status = terminal_status.to_owned();
+    pending.error_code = error_code.clone();
+    config::Config::set_option(
+        keys::OPTION_PENDING_ANDROID_UPDATE.to_owned(),
+        serde_json::to_string(&pending)?,
+    );
+    let reported =
+        report_pending_update_terminal_with_error(terminal_status, &pending.event, &error_code);
+    if android_terminal_report_should_clear(reported) {
+        config::Config::set_option(
+            keys::OPTION_PENDING_ANDROID_UPDATE.to_owned(),
+            String::new(),
+        );
+        Ok(())
+    } else {
+        bail!("Android update terminal event reporting is pending retry")
+    }
 }
 
 const UPDATE_SIGNATURE_KEY_ID: &str = "yan-release-2026";
@@ -1630,6 +1878,33 @@ pub(crate) fn report_update_event_with_origin(
     build_seq: u64,
     source: &str,
 ) -> bool {
+    let error_code = match status {
+        "failed" => "all_sources_failed",
+        "deferred" => "active_session",
+        "rolled_back" => "install_failed",
+        "rollback_failed" => "rollback_failed",
+        _ => "",
+    };
+    report_update_event_with_origin_and_error(
+        status,
+        from_version,
+        from_build_seq,
+        version,
+        build_seq,
+        source,
+        error_code,
+    )
+}
+
+fn report_update_event_with_origin_and_error(
+    status: &str,
+    from_version: &str,
+    from_build_seq: u64,
+    version: &str,
+    build_seq: u64,
+    source: &str,
+    error_code: &str,
+) -> bool {
     #[cfg(feature = "flutter")]
     {
         let event = serde_json::json!({
@@ -1660,13 +1935,7 @@ pub(crate) fn report_update_event_with_origin(
         "source_commit": crate::SOURCE_COMMIT,
         "to_version": version,
         "to_build_seq": build_seq,
-        "error_code": match status {
-            "failed" => "all_sources_failed",
-            "deferred" => "active_session",
-            "rolled_back" => "install_failed",
-            "rollback_failed" => "rollback_failed",
-            _ => "",
-        },
+        "error_code": error_code,
         "source": source,
     });
     let Ok(body) = serde_json::to_vec(&payload) else {
@@ -1701,6 +1970,26 @@ pub(crate) fn report_update_event_with_origin(
 }
 
 pub(crate) fn report_pending_update_terminal(status: &str, event: &PendingUpdateEvent) -> bool {
+    report_pending_update_terminal_with_error(
+        status,
+        event,
+        pending_update_terminal_error_code(status),
+    )
+}
+
+fn pending_update_terminal_error_code(status: &str) -> &str {
+    if status == "installed" {
+        ""
+    } else {
+        status
+    }
+}
+
+fn report_pending_update_terminal_with_error(
+    status: &str,
+    event: &PendingUpdateEvent,
+    error_code: &str,
+) -> bool {
     let command_reported = if let Some(command_id) = &event.command_id {
         let state = load_pending_update_commands()
             .into_iter()
@@ -1708,13 +1997,16 @@ pub(crate) fn report_pending_update_terminal(status: &str, event: &PendingUpdate
         if state.is_none() && load_processed_update_commands().contains(command_id) {
             true
         } else if let Some(state) = state {
-            let (terminal_status, error_code) = if status == "installed" {
+            let (terminal_status, terminal_error_code) = if status == "installed" {
                 ("completed", "")
             } else {
-                ("failed", status)
+                ("failed", error_code)
             };
-            report_update_command_event(&state.command, status, error_code);
-            persist_and_report_update_command_terminal(&state.command, terminal_status, error_code)
+            persist_and_report_update_command_terminal(
+                &state.command,
+                terminal_status,
+                terminal_error_code,
+            )
         } else {
             log::warn!("Missing pending update command {command_id}");
             return false;
@@ -1722,13 +2014,14 @@ pub(crate) fn report_pending_update_terminal(status: &str, event: &PendingUpdate
     } else {
         true
     };
-    let update_reported = report_update_event_with_origin(
+    let update_reported = report_update_event_with_origin_and_error(
         status,
         &event.from_version,
         event.from_build_seq,
         &event.version,
         event.build_seq,
         event.source.as_str(),
+        error_code,
     );
     update_reported && command_reported
 }
@@ -2023,12 +2316,21 @@ pub fn start_auto_update_macos() {
         .spawn(move || {
             log::info!("[root-update] Auto-update scheduler thread started.");
             consume_mac_update_result();
-            std::thread::sleep(INITIAL_CHECK_DELAY);
             wait_for_failed_update_retry();
+            let mut next_delay = Some(INITIAL_CHECK_DELAY);
             loop {
+                if wait_for_mac_schedule_change(&schedule_rx, next_delay) {
+                    log::info!("[root-update] Update policy changed; recalculating schedule.");
+                    next_delay = scheduled_update_interval();
+                    continue;
+                }
+                if scheduled_update_interval().is_none() {
+                    next_delay = None;
+                    continue;
+                }
                 log::info!("[root-update] Running scheduled update check...");
                 let no_active_conns = has_no_active_conns_ipc();
-                let interval = if !no_active_conns {
+                next_delay = if !no_active_conns {
                     log::info!("[root-update] Active session in progress, retrying in 10 min.");
                     Some(MIN_INTERVAL)
                 } else {
@@ -2049,9 +2351,6 @@ pub fn start_auto_update_macos() {
                         }
                     }
                 };
-                if wait_for_mac_schedule_change(&schedule_rx, interval) {
-                    log::info!("[root-update] Update policy changed; recalculating schedule.");
-                }
             }
         });
     if let Err(err) = spawn_result {
@@ -2410,6 +2709,23 @@ mod tests {
         assert_eq!(
             scheduled_update_delay(true, 999),
             Some(Duration::from_secs(168 * 60 * 60))
+        );
+    }
+
+    #[test]
+    fn connectivity_restore_only_checks_when_background_checks_are_enabled() {
+        assert!(!super::should_check_on_connectivity_restored(false, false));
+        assert!(super::should_check_on_connectivity_restored(true, false));
+        assert!(super::should_check_on_connectivity_restored(false, true));
+        assert!(super::should_check_on_connectivity_restored(true, true));
+    }
+
+    #[test]
+    fn successful_pending_update_has_no_error_code() {
+        assert_eq!(super::pending_update_terminal_error_code("installed"), "");
+        assert_eq!(
+            super::pending_update_terminal_error_code("rolled_back"),
+            "rolled_back"
         );
     }
 

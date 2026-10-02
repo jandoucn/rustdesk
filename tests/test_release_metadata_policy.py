@@ -10,9 +10,9 @@ class ReleaseMetadataPolicyTest(unittest.TestCase):
     def test_next_catalog_snapshot_uses_new_semver_and_unique_build_sequence(self):
         metadata = json.loads((ROOT / "version.json").read_text())
 
-        self.assertEqual(metadata["version"], "1.5.1")
-        self.assertEqual(metadata["build_number"], "20261002.2")
-        self.assertEqual(metadata["build_seq"], 2026100202)
+        self.assertEqual(metadata["version"], "1.5.2")
+        self.assertEqual(metadata["build_number"], "20261002.3")
+        self.assertEqual(metadata["build_seq"], 2026100203)
 
     def test_release_metadata_stays_empty_and_uses_the_canonical_tag(self):
         agents = (ROOT / "AGENTS.md").read_text()

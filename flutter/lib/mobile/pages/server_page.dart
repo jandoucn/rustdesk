@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -892,8 +893,39 @@ class ClientInfo extends StatelessWidget {
   }
 }
 
-void androidChannelInit() {
-  gFFI.setMethodCallHandler((method, arguments) {
+Timer? _androidUpdateInstallReportRetry;
+
+Future<void> _reportAndroidUpdateInstallResult(Map<String, dynamic> values) async {
+  _androidUpdateInstallReportRetry?.cancel();
+  await bind.mainSetCommon(
+    key: kAndroidUpdateInstallResult,
+    value: jsonEncode(values),
+  );
+  final pending = await bind.mainGetCommon(key: 'pending-android-update-state');
+  if (pending.isEmpty) {
+    await gFFI.invokeMethod('clear_update_install_status');
+  } else {
+    _androidUpdateInstallReportRetry = Timer(const Duration(seconds: 30), () {
+      unawaited(_reportAndroidUpdateInstallResult(values));
+    });
+  }
+}
+
+Future<void> consumeAndroidUpdateInstallStatus(Map<String, dynamic> values) async {
+  final status = values['status']?.toString() ?? '';
+  final error = values['error']?.toString() ?? '';
+  stateGlobal.updateStatus.value = androidUpdateInstallStatus(
+    status: status,
+    error: error,
+  );
+  if (isAndroidUpdateInstallTerminal(status)) {
+    await _reportAndroidUpdateInstallResult(values);
+    if (status == 'failed') showToast(stateGlobal.updateStatus.value);
+  }
+}
+
+Future<void> androidChannelInit() async {
+  gFFI.setMethodCallHandler((method, arguments) async {
     debugPrint("flutter got android msg,$method,$arguments");
     try {
       switch (method) {
@@ -923,6 +955,12 @@ void androidChannelInit() {
             gFFI.serverModel.stopService();
             break;
           }
+        case "on_android_update_install_status":
+          {
+            final values = Map<String, dynamic>.from(arguments as Map);
+            await consumeAndroidUpdateInstallStatus(values);
+            break;
+          }
         case "msgbox":
           {
             var type = arguments["type"] as String;
@@ -947,6 +985,10 @@ void androidChannelInit() {
     }
     return "";
   });
+  final current = await gFFI.invokeMethod('get_update_install_status');
+  if (current is Map && current['status']?.toString() != 'idle') {
+    await consumeAndroidUpdateInstallStatus(Map<String, dynamic>.from(current));
+  }
 }
 
 void showScamWarning(BuildContext context, ServerModel serverModel) {

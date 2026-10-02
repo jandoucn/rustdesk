@@ -48,8 +48,6 @@ fn initialize(app_dir: &str, custom_client_config: &str) {
     } else {
         crate::read_custom_client(custom_client_config);
     }
-    #[cfg(not(any(target_os = "android", target_os = "ios")))]
-    crate::updater::start_auto_update();
     #[cfg(target_os = "android")]
     {
         // flexi_logger can't work when android_logger initialized.
@@ -76,6 +74,8 @@ fn initialize(app_dir: &str, custom_client_config: &str) {
     {
         let _ = crate::common::global_init();
     }
+    #[cfg(not(target_os = "ios"))]
+    crate::updater::start_auto_update();
     #[cfg(not(any(target_os = "android", target_os = "ios")))]
     {
         // core_main's init_log does not work for flutter since it is only applied to its load_library in main.c
@@ -2715,6 +2715,14 @@ pub fn main_get_printer_names() -> SyncReturn<String> {
 }
 
 pub fn main_get_common(key: String) -> String {
+    #[cfg(target_os = "android")]
+    if key == "pending-android-update-ready" {
+        return crate::updater::pending_android_update_ready();
+    }
+    #[cfg(target_os = "android")]
+    if key == "pending-android-update-state" {
+        return crate::updater::pending_android_update_state();
+    }
     if key == "is-printer-installed" {
         #[cfg(target_os = "windows")]
         {
@@ -2812,10 +2820,17 @@ pub fn main_get_common_sync(key: String) -> SyncReturn<String> {
 }
 
 pub fn main_set_common(_key: String, _value: String) {
-    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+    #[cfg(not(target_os = "ios"))]
     if _key == "install-verified-update" {
         if let Err(err) = crate::updater::manually_check_update() {
             log::error!("Failed to request verified update: {}", err);
+        }
+        return;
+    }
+    #[cfg(target_os = "android")]
+    if _key == "android-update-install-result" {
+        if let Err(err) = crate::updater::complete_android_update_install(&_value) {
+            log::error!("Failed to complete Android update installation: {}", err);
         }
         return;
     }
