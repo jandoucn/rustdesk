@@ -16,12 +16,17 @@ class MacosScreenPermissionTest(unittest.TestCase):
             app = root / "RustDesk Yan.app"
             executable = app / "Contents/MacOS/RustDesk Yan"
             executable.parent.mkdir(parents=True)
-            executable.touch()
+            executable.write_text(
+                "#!/bin/sh\n"
+                "echo 'screen_recording=true accessibility=true input_monitoring=false'\n",
+                encoding="utf-8",
+            )
             executable.chmod(0o755)
 
             bin_dir = root / "bin"
             bin_dir.mkdir()
             log = root / "commands.log"
+            permission_log = root / "permission.log"
             signature_state = root / "stable-signature"
             self._write_command(bin_dir, "uname", 'echo "Darwin"')
             self._write_command(bin_dir, "xattr", ":")
@@ -69,6 +74,8 @@ class MacosScreenPermissionTest(unittest.TestCase):
                     "RUSTDESK_OPEN_COMMAND": str(bin_dir / "open"),
                     "TEST_LOG": str(log),
                     "TEST_SIGNATURE_STATE": str(signature_state),
+                    "RUSTDESK_PERMISSION_LOG_FILE": str(permission_log),
+                    "RUSTDESK_TCC_DB": "none",
                 }
             )
             result = subprocess.run(
@@ -94,7 +101,10 @@ class MacosScreenPermissionTest(unittest.TestCase):
             )
             self.assertIn("tccutil reset ScreenCapture com.example.rustdesk", commands)
             self.assertIn("tccutil reset Accessibility com.example.rustdesk", commands)
-            self.assertIn("tccutil reset ListenEvent com.example.rustdesk", commands)
+            self.assertNotIn("tccutil reset ListenEvent com.example.rustdesk", commands)
+            permission_log_text = permission_log.read_text(encoding="utf-8")
+            self.assertIn("探针原始输出：screen_recording=true accessibility=true input_monitoring=false", permission_log_text)
+            self.assertNotIn("--check-macos-permissions", commands)
 
     def test_wizard_clears_quarantine_and_verifies_each_permission(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -165,6 +175,7 @@ class MacosScreenPermissionTest(unittest.TestCase):
                     "RUSTDESK_PERMISSION_TIMEOUT_SECONDS": "5",
                     "TEST_LOG": str(log),
                     "TEST_STATE": str(state),
+                    "RUSTDESK_TCC_DB": "none",
                 }
             )
 
@@ -182,21 +193,21 @@ class MacosScreenPermissionTest(unittest.TestCase):
             output = result.stdout
             self.assertIn("清除隔离属性", output)
             self.assertIn("屏幕录制权限：已通过", output)
-            self.assertIn("辅助功能权限：已通过", output)
-            self.assertIn("输入监控权限：已通过", output)
+            self.assertIn("设备控制和数据访问（辅助功能）：已通过", output)
+            self.assertNotIn("输入监控权限：已通过", output)
             self.assertIn("权限配置完成", output)
 
             commands = log.read_text(encoding="utf-8")
             self.assertIn(f"xattr -cr {app}", commands)
             self.assertNotIn("tccutil reset", commands)
-            self.assertIn(f"open -n {app} --args --open-window", commands)
+            self.assertIn(f"open -n {app}", commands)
             self.assertIn(
                 f"open -n -W {app} --args --check-macos-permissions",
                 commands,
             )
             self.assertGreaterEqual(commands.count("osascript "), 2)
             self.assertEqual(commands.count("pkill -x RustDesk Yan"), 2)
-            self.assertEqual(commands.count(f"open -n {app} --args --open-window"), 2)
+            self.assertEqual(commands.count(f"open -n {app}"), 2)
 
             reset_env = env.copy()
             reset_env["RUSTDESK_RESET_PERMISSIONS"] = "1"
@@ -217,7 +228,7 @@ class MacosScreenPermissionTest(unittest.TestCase):
             reset_commands = log.read_text(encoding="utf-8")
             self.assertIn("tccutil reset ScreenCapture com.example.rustdesk", reset_commands)
             self.assertIn("tccutil reset Accessibility com.example.rustdesk", reset_commands)
-            self.assertIn("tccutil reset ListenEvent com.example.rustdesk", reset_commands)
+            self.assertNotIn("tccutil reset ListenEvent com.example.rustdesk", reset_commands)
 
     @staticmethod
     def _write_command(bin_dir: Path, name: str, body: str) -> None:
