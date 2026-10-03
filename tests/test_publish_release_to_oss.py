@@ -965,6 +965,28 @@ class PublishReleaseToOssTest(unittest.TestCase):
         )
         self.assertTrue(all(f"/{tags[0]}/" in key for key in bucket.deleted))
 
+    def test_cleanup_removes_old_recognized_prefix_even_without_complete_catalog(self):
+        prefix = "rustdesk/stable"
+        tags = [
+            f"v1.5.2-build-2026.10.{day:02d}-01"
+            for day in range(1, 7)
+        ]
+        keys = [f"{prefix}/{tag}/partial.bin" for tag in tags]
+        sizes = {key: 1 for key in keys}
+        bucket = FakeBucket({}, keys, sizes)
+
+        retained = self.publisher.cleanup_complete_releases(
+            bucket,
+            lambda object_prefix: (
+                key for key in keys if key.startswith(object_prefix)
+            ),
+            prefix,
+            5,
+        )
+
+        self.assertEqual(retained, tags[1:][::-1])
+        self.assertEqual(bucket.deleted, [keys[0]])
+
 
 if __name__ == "__main__":
     unittest.main()

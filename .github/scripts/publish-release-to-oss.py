@@ -460,26 +460,35 @@ def release_prefix_is_complete(bucket, list_keys, prefix, tag):
 
 def cleanup_complete_releases(bucket, list_keys, prefix, retain):
     object_keys = set(list_keys(f"{prefix}/"))
-    catalog_suffix = "/catalog.json"
-    complete = []
-    for catalog_key in object_keys:
-        if not catalog_key.endswith(catalog_suffix):
+    releases = {}
+    for object_key in object_keys:
+        relative_key = object_key[len(prefix) + 1 :]
+        tag, separator, _ = relative_key.partition("/")
+        if not separator:
             continue
-        tag = catalog_key[len(prefix) + 1 : -len(catalog_suffix)]
-        if not tag or "/" in tag:
+        tag_build_seq = compatible_tag_build_seq(tag)
+        if tag_build_seq is None:
             continue
-        catalog = valid_complete_catalog(bucket, catalog_key, object_keys, prefix, tag)
-        if catalog is not None:
-            tag_build_seq = compatible_tag_build_seq(tag)
-            catalog_build_seq = catalog.get("build_seq")
-            if tag_build_seq is None:
+        catalog_key = f"{prefix}/{tag}/catalog.json"
+        if catalog_key in object_keys:
+            try:
+                catalog = json.loads(bucket.get_object(catalog_key).read())
+            except Exception:
+                catalog = None
+            if (
+                isinstance(catalog, dict)
+                and catalog.get("build_seq") is not None
+                and catalog.get("build_seq") != tag_build_seq
+            ):
                 continue
-            if catalog_build_seq is not None and catalog_build_seq != tag_build_seq:
-                continue
-            complete.append((tag_build_seq, tag))
-    complete.sort(reverse=True)
-    retained = [tag for _, tag in complete[:retain]]
-    for _, tag in complete[retain:]:
+        releases[tag] = tag_build_seq
+
+    ordered = sorted(
+        ((build_seq, tag) for tag, build_seq in releases.items()),
+        reverse=True,
+    )
+    retained = [tag for _, tag in ordered[:retain]]
+    for _, tag in ordered[retain:]:
         old_prefix = f"{prefix}/{tag}/"
         for key in list(list_keys(old_prefix)):
             bucket.delete_object(key)
