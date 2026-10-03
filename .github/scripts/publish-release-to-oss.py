@@ -469,18 +469,6 @@ def cleanup_complete_releases(bucket, list_keys, prefix, retain):
         tag_build_seq = compatible_tag_build_seq(tag)
         if tag_build_seq is None:
             continue
-        catalog_key = f"{prefix}/{tag}/catalog.json"
-        if catalog_key in object_keys:
-            try:
-                catalog = json.loads(bucket.get_object(catalog_key).read())
-            except Exception:
-                catalog = None
-            if (
-                isinstance(catalog, dict)
-                and catalog.get("build_seq") is not None
-                and catalog.get("build_seq") != tag_build_seq
-            ):
-                continue
         releases[tag] = tag_build_seq
 
     ordered = sorted(

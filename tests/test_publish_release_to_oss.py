@@ -859,33 +859,30 @@ class PublishReleaseToOssTest(unittest.TestCase):
 
         self.assertIsNone(catalog)
 
-    def test_cleanup_rejects_catalog_build_sequence_that_disagrees_with_tag(self):
+    def test_cleanup_removes_old_catalog_with_mismatched_build_sequence(self):
         prefix = "rustdesk/stable"
-        tag = "v1.5.0-build-2026.09.30-05"
-        catalog_key = f"{prefix}/{tag}/catalog.json"
-        assets = [
-            {
-                "name": f"asset-{index}",
-                "key": f"{prefix}/{tag}/asset-{index}",
-                "size": index + 1,
-                "sha256": f"{index:064x}",
-                "signature": "signature",
-            }
-            for index in range(len(self.publisher.EXPECTED_TARGETS))
+        tags = [
+            f"v1.5.0-build-2026.09.{day:02d}-01"
+            for day in range(25, 31)
         ]
-        body = json.dumps({
-            "schema": 1,
-            "tag": tag,
-            "build_seq": 2026093006,
-            "published_at": 1,
-            "assets": assets,
-        }).encode()
-        keys = [catalog_key, *(asset["key"] for asset in assets)]
-        sizes = {
-            catalog_key: len(body),
-            **{asset["key"]: asset["size"] for asset in assets},
-        }
-        bucket = FakeBucket({catalog_key: body}, keys, sizes)
+        keys = []
+        catalogs = {}
+        sizes = {}
+        for tag in tags:
+            catalog_key = f"{prefix}/{tag}/catalog.json"
+            body = json.dumps({
+                "schema": 1,
+                "tag": tag,
+                "build_seq": 2026093006 if tag == tags[0] else int(
+                    f"{tag.split('-')[-2].replace('.', '')}01"
+                ),
+                "published_at": 1,
+                "assets": [],
+            }).encode()
+            catalogs[catalog_key] = body
+            keys.append(catalog_key)
+            sizes[catalog_key] = len(body)
+        bucket = FakeBucket(catalogs, keys, sizes)
 
         retained = self.publisher.cleanup_complete_releases(
             bucket,
@@ -894,8 +891,8 @@ class PublishReleaseToOssTest(unittest.TestCase):
             5,
         )
 
-        self.assertEqual(retained, [])
-        self.assertEqual(bucket.deleted, [])
+        self.assertEqual(retained, tags[1:][::-1])
+        self.assertEqual(bucket.deleted, [f"{prefix}/{tags[0]}/catalog.json"])
 
     def test_complete_catalog_rejects_catalog_or_asset_head_size_mismatch(self):
         prefix = "rustdesk/stable"
