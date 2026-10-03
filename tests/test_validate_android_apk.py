@@ -20,7 +20,7 @@ class ValidateAndroidApkTest(unittest.TestCase):
         cls.validator = load_module()
 
     def test_accepts_release_identity_and_flutter_split_abi_version_codes(self):
-        base_version_code = 2026100301
+        base_version_code = 2026100302
         for offset in (0, 1_000, 2_000, 3_000, 4_000):
             with self.subTest(offset=offset):
                 badging = (
@@ -47,7 +47,7 @@ class ValidateAndroidApkTest(unittest.TestCase):
                 badging,
                 expected_package="com.carriez.flutter_hbb",
                 expected_version="1.5.2",
-                base_version_code=2026100301,
+                base_version_code=2026100302,
             )
 
     def test_rejects_stale_pubspec_identity(self):
@@ -61,7 +61,7 @@ class ValidateAndroidApkTest(unittest.TestCase):
                 badging,
                 expected_package="com.carriez.flutter_hbb",
                 expected_version="1.5.2",
-                base_version_code=2026100301,
+                base_version_code=2026100302,
             )
 
 

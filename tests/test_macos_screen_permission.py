@@ -10,103 +10,7 @@ SCRIPT = REPO_ROOT / "macos-screen-permission.sh"
 
 
 class MacosScreenPermissionTest(unittest.TestCase):
-    def test_wizard_repairs_unstable_cdhash_identity_and_resets_stale_permissions(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_dir:
-            root = Path(temp_dir)
-            app = root / "RustDesk Yan.app"
-            executable = app / "Contents/MacOS/RustDesk Yan"
-            executable.parent.mkdir(parents=True)
-            executable.write_text(
-                "#!/bin/sh\n"
-                "echo 'screen_recording=true accessibility=true input_monitoring=false'\n",
-                encoding="utf-8",
-            )
-            executable.chmod(0o755)
-
-            bin_dir = root / "bin"
-            bin_dir.mkdir()
-            log = root / "commands.log"
-            permission_log = root / "permission.log"
-            signature_state = root / "stable-signature"
-            self._write_command(bin_dir, "uname", 'echo "Darwin"')
-            self._write_command(bin_dir, "xattr", ":")
-            self._write_command(bin_dir, "osascript", 'echo "osascript $*" >> "$TEST_LOG"')
-            self._write_command(bin_dir, "pkill", 'echo "pkill $*" >> "$TEST_LOG"')
-            self._write_command(bin_dir, "pgrep", "exit 1")
-            self._write_command(bin_dir, "sleep", ":")
-            self._write_command(bin_dir, "tccutil", 'echo "tccutil $*" >> "$TEST_LOG"')
-            self._write_command(
-                bin_dir,
-                "codesign",
-                'echo "codesign $*" >> "$TEST_LOG"\n'
-                'case "$*" in\n'
-                '  *"-dr -"*)\n'
-                '    if [ -f "$TEST_SIGNATURE_STATE" ]; then\n'
-                '      echo \'designated => identifier "com.example.rustdesk"\' >&2\n'
-                '    else\n'
-                '      echo \'designated => cdhash H"0123456789abcdef"\' >&2\n'
-                '    fi\n'
-                '    ;;\n'
-                '  *"--requirements =designated => identifier"*) touch "$TEST_SIGNATURE_STATE" ;;\n'
-                "esac",
-            )
-            self._write_command(
-                bin_dir,
-                "open",
-                'echo "open $*" >> "$TEST_LOG"\n'
-                'case "$*" in\n'
-                '  *--check-macos-permissions*)\n'
-                '    for arg in "$@"; do\n'
-                '      case "$arg" in --macos-permission-output=*) output=${arg#*=} ;; esac\n'
-                '    done\n'
-                '    echo "screen_recording=true accessibility=true input_monitoring=true" > "$output"\n'
-                '    ;;\n'
-                'esac',
-            )
-
-            env = os.environ.copy()
-            env.update(
-                {
-                    "PATH": f"{bin_dir}:{env['PATH']}",
-                    "RUSTDESK_APP": str(app),
-                    "RUSTDESK_BUNDLE_ID": "com.example.rustdesk",
-                    "RUSTDESK_EXECUTABLE": str(executable),
-                    "RUSTDESK_OPEN_COMMAND": str(bin_dir / "open"),
-                    "TEST_LOG": str(log),
-                    "TEST_SIGNATURE_STATE": str(signature_state),
-                    "RUSTDESK_PERMISSION_LOG_FILE": str(permission_log),
-                    "RUSTDESK_TCC_DB": "none",
-                }
-            )
-            result = subprocess.run(
-                ["/bin/sh", str(SCRIPT)],
-                text=True,
-                capture_output=True,
-                encoding="utf-8",
-                errors="replace",
-                env=env,
-                timeout=10,
-            )
-
-            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-            self.assertIn("已迁移为稳定签名身份", result.stdout)
-            commands = log.read_text(encoding="utf-8")
-            self.assertIn(
-                '--requirements =designated => identifier "com.example.rustdesk"',
-                commands,
-            )
-            self.assertIn(
-                f"--entitlements {REPO_ROOT / 'flutter/macos/Runner/Release.entitlements'}",
-                commands,
-            )
-            self.assertIn("tccutil reset ScreenCapture com.example.rustdesk", commands)
-            self.assertIn("tccutil reset Accessibility com.example.rustdesk", commands)
-            self.assertNotIn("tccutil reset ListenEvent com.example.rustdesk", commands)
-            permission_log_text = permission_log.read_text(encoding="utf-8")
-            self.assertIn("探针原始输出：screen_recording=true accessibility=true input_monitoring=false", permission_log_text)
-            self.assertNotIn("--check-macos-permissions", commands)
-
-    def test_wizard_clears_quarantine_and_verifies_each_permission(self) -> None:
+    def test_startup_fix_clears_quarantine_and_does_not_touch_privacy_permissions(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
             app = root / "RustDesk Yan.app"
@@ -114,53 +18,18 @@ class MacosScreenPermissionTest(unittest.TestCase):
             executable.parent.mkdir(parents=True)
             executable.touch()
             executable.chmod(0o755)
-
             bin_dir = root / "bin"
             bin_dir.mkdir()
             log = root / "commands.log"
-            state = root / "state"
-            state.mkdir()
 
+            self._write_command(bin_dir, "uname", 'echo "Darwin"')
             self._write_command(bin_dir, "xattr", 'echo "xattr $*" >> "$TEST_LOG"')
-            self._write_command(bin_dir, "tccutil", 'echo "tccutil $*" >> "$TEST_LOG"')
+            self._write_command(bin_dir, "codesign", 'echo "codesign $*" >> "$TEST_LOG"; exit 0')
+            self._write_command(bin_dir, "open", 'echo "open $*" >> "$TEST_LOG"')
             self._write_command(bin_dir, "osascript", 'echo "osascript $*" >> "$TEST_LOG"')
             self._write_command(bin_dir, "pkill", 'echo "pkill $*" >> "$TEST_LOG"')
             self._write_command(bin_dir, "pgrep", "exit 1")
-            self._write_command(
-                bin_dir,
-                "codesign",
-                'echo "codesign $*" >> "$TEST_LOG"\n'
-                'case "$*" in\n'
-                '  *"-dr -"*) echo \'designated => identifier "com.example.rustdesk"\' >&2 ;;\n'
-                "esac",
-            )
             self._write_command(bin_dir, "sleep", ":")
-            self._write_command(bin_dir, "uname", 'echo "Darwin"')
-            self._write_command(
-                bin_dir,
-                "open",
-                'echo "open $*" >> "$TEST_LOG"\n'
-                'case "$*" in\n'
-                '  *--check-macos-permissions*)\n'
-                '    for arg in "$@"; do\n'
-                '      case "$arg" in\n'
-                '        --macos-permission-output=*) output=${arg#*=} ;;\n'
-                '      esac\n'
-                '    done\n'
-                '    screen_recording=false\n'
-                '    accessibility=false\n'
-                '    input_monitoring=false\n'
-                '    test -f "$TEST_STATE/ScreenCapture" && screen_recording=true\n'
-                '    test -f "$TEST_STATE/Accessibility" && accessibility=true\n'
-                '    test -f "$TEST_STATE/ListenEvent" && input_monitoring=true\n'
-                '    echo "screen_recording=$screen_recording accessibility=$accessibility input_monitoring=$input_monitoring" > "$output"\n'
-                '    ;;\n'
-                '  *"--args --open-window"*) : ;;\n'
-                '  *Privacy_ScreenCapture*) touch "$TEST_STATE/ScreenCapture" ;;\n'
-                '  *Privacy_Accessibility*) touch "$TEST_STATE/Accessibility" ;;\n'
-                '  *Privacy_ListenEvent*) touch "$TEST_STATE/ListenEvent" ;;\n'
-                'esac',
-            )
 
             env = os.environ.copy()
             env.update(
@@ -170,15 +39,11 @@ class MacosScreenPermissionTest(unittest.TestCase):
                     "RUSTDESK_BUNDLE_ID": "com.example.rustdesk",
                     "RUSTDESK_EXECUTABLE": str(executable),
                     "RUSTDESK_OPEN_COMMAND": str(bin_dir / "open"),
-                    "RUSTDESK_PERMISSION_NO_COLOR": "1",
-                    "RUSTDESK_PERMISSION_SLEEP_SECONDS": "1",
-                    "RUSTDESK_PERMISSION_TIMEOUT_SECONDS": "5",
+                    "RUSTDESK_PERMISSION_LOG_FILE": "/dev/null",
+                    "RUSTDESK_PERMISSION_SLEEP_SECONDS": "0",
                     "TEST_LOG": str(log),
-                    "TEST_STATE": str(state),
-                    "RUSTDESK_TCC_DB": "none",
                 }
             )
-
             result = subprocess.run(
                 ["/bin/sh", str(SCRIPT)],
                 text=True,
@@ -190,45 +55,88 @@ class MacosScreenPermissionTest(unittest.TestCase):
             )
 
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-            output = result.stdout
-            self.assertIn("清除隔离属性", output)
-            self.assertIn("屏幕录制权限：已通过", output)
-            self.assertIn("设备控制和数据访问（辅助功能）：已通过", output)
-            self.assertNotIn("输入监控权限：已通过", output)
-            self.assertIn("权限配置完成", output)
-
+            self.assertIn("清除隔离属性", result.stdout)
+            self.assertIn("应用签名有效", result.stdout)
+            self.assertIn("启动修复完成", result.stdout)
+            self.assertIn("请在系统设置中手动开启", result.stdout)
             commands = log.read_text(encoding="utf-8")
             self.assertIn(f"xattr -cr {app}", commands)
-            self.assertNotIn("tccutil reset", commands)
             self.assertIn(f"open -n {app}", commands)
-            self.assertIn(
-                f"open -n -W {app} --args --check-macos-permissions",
-                commands,
-            )
-            self.assertGreaterEqual(commands.count("osascript "), 2)
-            self.assertEqual(commands.count("pkill -x RustDesk Yan"), 2)
-            self.assertEqual(commands.count(f"open -n {app}"), 2)
+            self.assertNotIn("tccutil", commands)
+            self.assertNotIn("System Settings", commands)
+            self.assertNotIn("--check-macos-permissions", commands)
 
-            reset_env = env.copy()
-            reset_env["RUSTDESK_RESET_PERMISSIONS"] = "1"
-            reset_result = subprocess.run(
+    def test_invalid_signature_repairs_service_before_app_without_resetting_tcc(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            app = root / "RustDesk Yan.app"
+            executable = app / "Contents/MacOS/RustDesk Yan"
+            service = app / "Contents/MacOS/service"
+            executable.parent.mkdir(parents=True)
+            executable.touch()
+            service.touch()
+            executable.chmod(0o755)
+            service.chmod(0o755)
+            bin_dir = root / "bin"
+            bin_dir.mkdir()
+            log = root / "commands.log"
+            signed = root / "signed"
+
+            self._write_command(bin_dir, "uname", 'echo "Darwin"')
+            self._write_command(bin_dir, "xattr", ":")
+            self._write_command(bin_dir, "open", 'echo "open $*" >> "$TEST_LOG"')
+            self._write_command(bin_dir, "osascript", ":")
+            self._write_command(bin_dir, "pkill", ":")
+            self._write_command(bin_dir, "pgrep", "exit 1")
+            self._write_command(bin_dir, "sleep", ":")
+            self._write_command(
+                bin_dir,
+                "codesign",
+                'echo "codesign $*" >> "$TEST_LOG"\n'
+                'case "$*" in\n'
+                '  *--verify*) test -f "$SIGNED" ;;\n'
+                '  *--sign*) touch "$SIGNED" ;;\n'
+                'esac',
+            )
+
+            env = os.environ.copy()
+            env.update(
+                {
+                    "PATH": f"{bin_dir}:{env['PATH']}",
+                    "RUSTDESK_APP": str(app),
+                    "RUSTDESK_BUNDLE_ID": "com.example.rustdesk",
+                    "RUSTDESK_EXECUTABLE": str(executable),
+                    "RUSTDESK_OPEN_COMMAND": str(bin_dir / "open"),
+                    "RUSTDESK_PERMISSION_LOG_FILE": "/dev/null",
+                    "RUSTDESK_PERMISSION_SLEEP_SECONDS": "0",
+                    "TEST_LOG": str(log),
+                    "SIGNED": str(signed),
+                }
+            )
+            result = subprocess.run(
                 ["/bin/sh", str(SCRIPT)],
                 text=True,
                 capture_output=True,
                 encoding="utf-8",
                 errors="replace",
-                env=reset_env,
+                env=env,
                 timeout=10,
             )
-            self.assertEqual(
-                reset_result.returncode,
-                0,
-                reset_result.stdout + reset_result.stderr,
+
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertIn("临时签名修复完成", result.stdout)
+            commands = log.read_text(encoding="utf-8")
+            service_command = f"codesign --force --sign - {service}"
+            app_command = f"codesign --force --sign - {app}"
+            command_lines = commands.splitlines()
+            service_line = next(i for i, line in enumerate(command_lines) if service_command in line)
+            app_line = next(
+                i
+                for i, line in enumerate(command_lines)
+                if app_command in line and line.strip() != service_command
             )
-            reset_commands = log.read_text(encoding="utf-8")
-            self.assertIn("tccutil reset ScreenCapture com.example.rustdesk", reset_commands)
-            self.assertIn("tccutil reset Accessibility com.example.rustdesk", reset_commands)
-            self.assertNotIn("tccutil reset ListenEvent com.example.rustdesk", reset_commands)
+            self.assertLess(service_line, app_line)
+            self.assertNotIn("tccutil", commands)
 
     @staticmethod
     def _write_command(bin_dir: Path, name: str, body: str) -> None:

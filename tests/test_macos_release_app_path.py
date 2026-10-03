@@ -117,6 +117,9 @@ class MacosReleaseAppPathTest(unittest.TestCase):
             "./flutter/build/macos/Build/Products/Release/RustDesk.app",
             workflow,
         )
+        self.assertIn("--build-name", build_script)
+        self.assertIn("--build-number", build_script)
+        self.assertIn("validate-macos-app-version.py", workflow)
 
     def test_unsigned_dmg_with_arch_suffix_does_not_require_rename(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

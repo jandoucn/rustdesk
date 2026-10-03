@@ -944,8 +944,15 @@ def build_flutter_dmg(version, features):
     # so the universal-by-default ARCHS_STANDARD doesn't try to link a missing slice.
     # FLUTTER_XCODE_* env vars are forwarded to xcodebuild as build settings.
     mac_arch = 'arm64' if platform.machine().lower() in ('arm64', 'aarch64') else 'x86_64'
+    flutter_version_args = ''
+    if os.environ.get('VERSION') and os.environ.get('BUILD_SEQ'):
+        flutter_version_args = (
+            f' --build-name "{os.environ["VERSION"]}"'
+            f' --build-number "{os.environ["BUILD_SEQ"]}"'
+        )
     system2(
-        f'FLUTTER_XCODE_ARCHS={mac_arch} FLUTTER_XCODE_ONLY_ACTIVE_ARCH=YES flutter build macos --release')
+        f'FLUTTER_XCODE_ARCHS={mac_arch} FLUTTER_XCODE_ONLY_ACTIVE_ARCH=YES '
+        f'flutter build macos --release{flutter_version_args}')
     system2('cp -rf ../target/release/service "./build/macos/Build/Products/Release/RustDesk Yan.app/Contents/MacOS/"')
     '''
     system2(

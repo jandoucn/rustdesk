@@ -324,6 +324,27 @@ void main() {
     );
   });
 
+  test('failed updates expose only secure HTTPS fallback URLs', () {
+    expect(
+      updateFailureFallbackUrl({
+        'status': 'failed',
+        'url': 'https://download.yan.life/rustdesk.apk',
+      }),
+      'https://download.yan.life/rustdesk.apk',
+    );
+    expect(
+      updateFailureFallbackUrl(
+        {'status': 'failed'},
+        fallbackUrl: 'https://download.yan.life/rustdesk.apk',
+      ),
+      'https://download.yan.life/rustdesk.apk',
+    );
+    expect(updateFailureFallbackUrl({'status': 'installing', 'url': 'https://example.test/a'}), isNull);
+    expect(updateFailureFallbackUrl({'status': 'installed', 'url': 'https://example.test/a'}), isNull);
+    expect(updateFailureFallbackUrl({'status': 'failed', 'url': ''}), isNull);
+    expect(updateFailureFallbackUrl({'status': 'failed', 'url': 'http://example.test/a'}), isNull);
+  });
+
   test('local update metadata is available before the first server check', () {
     final metadata = parseLocalUpdateMetadata(
       '{"version":"1.5.0","build_seq":2026093006,"channel":"stable"}',

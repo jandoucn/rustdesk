@@ -4221,6 +4221,27 @@ String androidUpdateInstallStatus({
 bool isAndroidUpdateInstallTerminal(String status) =>
     status == 'installed' || status == 'failed';
 
+String? updateFailureFallbackUrl(
+  Map<String, dynamic> event, {
+  String fallbackUrl = '',
+}) {
+  if (event['status']?.toString() != 'failed') return null;
+  final raw = event['url']?.toString() ?? '';
+  final value = raw.isNotEmpty ? raw : fallbackUrl;
+  final uri = Uri.tryParse(value);
+  if (uri == null || uri.scheme != 'https' || uri.host.isEmpty) return null;
+  return value;
+}
+
+Future<void> openUpdateFailureFallback(
+  Map<String, dynamic> event, {
+  String fallbackUrl = '',
+}) async {
+  final value = updateFailureFallbackUrl(event, fallbackUrl: fallbackUrl);
+  if (value == null) return;
+  await launchUrl(Uri.parse(value), mode: LaunchMode.externalApplication);
+}
+
 Future<void> startAndroidVerifiedUpdate(Map<String, dynamic> event) async {
   final path = event['path']?.toString() ?? '';
   if (path.isEmpty) return;
@@ -4246,6 +4267,10 @@ Future<void> startAndroidVerifiedUpdate(Map<String, dynamic> event) async {
     await bind.mainSetCommon(
       key: kAndroidUpdateInstallResult,
       value: jsonEncode(result),
+    );
+    await openUpdateFailureFallback(
+      result,
+      fallbackUrl: stateGlobal.updateUrl.value,
     );
   }
 }
@@ -4282,6 +4307,10 @@ void checkUpdate() {
       if (evt['status'] is String) {
         stateGlobal.updateStatus.value = evt['status'];
       }
+      await openUpdateFailureFallback(
+        evt,
+        fallbackUrl: stateGlobal.updateUrl.value,
+      );
     });
     if (isAndroid) {
       platformFFI.registerEventHandler(

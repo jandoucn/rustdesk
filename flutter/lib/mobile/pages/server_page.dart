@@ -915,13 +915,32 @@ Future<void> _reportAndroidUpdateInstallResult(Map<String, dynamic> values) asyn
 Future<void> consumeAndroidUpdateInstallStatus(Map<String, dynamic> values) async {
   final status = values['status']?.toString() ?? '';
   final error = values['error']?.toString() ?? '';
+  var fallbackUrl = values['url']?.toString() ?? '';
+  if (status == 'failed' && fallbackUrl.isEmpty) {
+    fallbackUrl = stateGlobal.updateUrl.value;
+    if (fallbackUrl.isEmpty) {
+      final pending = await bind.mainGetCommon(key: 'pending-android-update-state');
+      if (pending.isNotEmpty) {
+        final decoded = jsonDecode(pending);
+        if (decoded is Map) {
+          fallbackUrl = decoded['download_url']?.toString() ?? '';
+        }
+      }
+    }
+  }
   stateGlobal.updateStatus.value = androidUpdateInstallStatus(
     status: status,
     error: error,
   );
   if (isAndroidUpdateInstallTerminal(status)) {
     await _reportAndroidUpdateInstallResult(values);
-    if (status == 'failed') showToast(stateGlobal.updateStatus.value);
+    if (status == 'failed') {
+      showToast(stateGlobal.updateStatus.value);
+      await openUpdateFailureFallback(
+        values,
+        fallbackUrl: fallbackUrl,
+      );
+    }
   }
 }
 

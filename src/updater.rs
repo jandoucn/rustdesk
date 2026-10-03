@@ -807,6 +807,38 @@ mod policy_stream_tests {
     }
 
     #[test]
+    fn mac_update_policy_allows_missing_server_but_fails_closed_for_broken_server_ipc() {
+        assert!(super::mac_update_allowed(
+            false,
+            super::MacIpcProbe::Unavailable
+        ));
+        assert!(!super::mac_update_allowed(
+            true,
+            super::MacIpcProbe::Unavailable
+        ));
+        assert!(!super::mac_update_allowed(
+            true,
+            super::MacIpcProbe::ActiveConnections
+        ));
+        assert!(super::mac_update_allowed(
+            true,
+            super::MacIpcProbe::NoActiveConnections
+        ));
+    }
+
+    #[test]
+    fn mac_update_policy_rejects_any_server_that_is_not_safe() {
+        assert!(!super::mac_update_allowed(
+            true,
+            super::MacIpcProbe::ActiveConnections
+        ));
+        assert!(!super::mac_update_allowed(
+            true,
+            super::MacIpcProbe::Unavailable
+        ));
+    }
+
+    #[test]
     fn android_pending_install_survives_missing_flutter_and_failed_reporting() {
         let pending = PendingAndroidUpdate {
             event: PendingUpdateEvent {
@@ -819,6 +851,7 @@ mod policy_stream_tests {
                 command_id: Some("cmd-android-1".to_owned()),
             },
             path: "/private/update.apk".to_owned(),
+            download_url: "https://download.yan.life/rustdesk.apk".to_owned(),
             terminal_status: String::new(),
             error_code: String::new(),
         };
@@ -827,6 +860,7 @@ mod policy_stream_tests {
         let ready = pending_android_update_ready_event(&encoded).unwrap();
         assert_eq!(ready["path"], "/private/update.apk");
         assert_eq!(ready["command_id"], "cmd-android-1");
+        assert_eq!(ready["url"], "https://download.yan.life/rustdesk.apk");
         assert!(!android_terminal_report_should_clear(false));
         assert!(android_terminal_report_should_clear(true));
     }
@@ -844,6 +878,7 @@ mod policy_stream_tests {
                 command_id: None,
             },
             path: "/private/update.apk".to_owned(),
+            download_url: "https://download.yan.life/rustdesk.apk".to_owned(),
             terminal_status: "failed".to_owned(),
             error_code: "blocked:policy\nignored".to_owned(),
         };
@@ -1358,6 +1393,7 @@ fn check_update_request(
                 version,
                 target_build_seq,
                 source,
+                &target.primary,
                 command.map(|value| value.command_id.clone()),
             ) {
                 report_update_event("failed", version, target_build_seq, source);
@@ -1448,6 +1484,7 @@ fn request_android_update_install(
     version: &str,
     build_seq: u64,
     source: &str,
+    download_url: &str,
     command_id: Option<String>,
 ) -> ResultType<()> {
     let path = file_path
@@ -1469,6 +1506,7 @@ fn request_android_update_install(
     let pending = PendingAndroidUpdate {
         event: pending,
         path: path.to_owned(),
+        download_url: download_url.to_owned(),
         terminal_status: String::new(),
         error_code: String::new(),
     };
@@ -1482,6 +1520,7 @@ fn request_android_update_install(
         "version": version,
         "build_seq": build_seq,
         "source": source,
+        "url": pending.download_url,
         "command_id": pending.event.command_id,
     });
     let _ = crate::flutter::push_global_event(crate::flutter::APP_TYPE_MAIN, event.to_string());
@@ -1493,6 +1532,8 @@ fn request_android_update_install(
 struct PendingAndroidUpdate {
     event: PendingUpdateEvent,
     path: String,
+    #[serde(default)]
+    download_url: String,
     #[serde(default)]
     terminal_status: String,
     #[serde(default)]
@@ -1511,6 +1552,7 @@ fn pending_android_update_ready_event(value: &str) -> Option<serde_json::Value> 
         "version": pending.event.version,
         "build_seq": pending.event.build_seq,
         "source": pending.event.source.as_str(),
+        "url": pending.download_url,
         "command_id": pending.event.command_id,
     }))
 }
@@ -1913,6 +1955,7 @@ fn report_update_event_with_origin_and_error(
             "version": version,
             "build_seq": build_seq,
             "source": source,
+            "url": crate::common::SOFTWARE_UPDATE_URL.lock().unwrap().clone(),
         });
         let _ = crate::flutter::push_global_event(crate::flutter::APP_TYPE_MAIN, event.to_string());
     }
@@ -2229,9 +2272,51 @@ pub fn get_download_file_from_url(url: &str) -> Option<PathBuf> {
 /// from every logged-in user's --server process via IPC.
 /// The root service cannot read connection state directly since connections
 /// live in user --server processes. Handles fast user switching by querying
-/// all GUI users, including the login-window server at UID 0. Falls back to
-/// false (assumes sessions active) on any IPC error to avoid updating during
-/// an unknown session state.
+/// all GUI users, including the login-window server at UID 0. A missing
+/// `--server` process is treated as idle; a live server with broken IPC stays
+/// fail-closed to avoid updating during an unknown session state.
+#[cfg(any(test, target_os = "macos"))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum MacIpcProbe {
+    NoActiveConnections,
+    ActiveConnections,
+    Unavailable,
+}
+
+#[cfg(any(test, target_os = "macos"))]
+fn mac_update_allowed(server_running: bool, probe: MacIpcProbe) -> bool {
+    match probe {
+        MacIpcProbe::NoActiveConnections => true,
+        MacIpcProbe::ActiveConnections => false,
+        MacIpcProbe::Unavailable => !server_running,
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn mac_server_process_running(uid: u32) -> bool {
+    let Ok(output) = std::process::Command::new("/usr/bin/pgrep")
+        .args(["-u", &uid.to_string(), "-x", &crate::get_app_name()])
+        .output()
+    else {
+        return false;
+    };
+    if !output.status.success() {
+        return false;
+    }
+    String::from_utf8_lossy(&output.stdout).lines().any(|pid| {
+        std::process::Command::new("/bin/ps")
+            .args(["-p", pid.trim(), "-o", "args="])
+            .output()
+            .ok()
+            .map(|args| {
+                String::from_utf8_lossy(&args.stdout)
+                    .split_whitespace()
+                    .any(|arg| arg == "--server")
+            })
+            .unwrap_or(false)
+    })
+}
+
 #[cfg(target_os = "macos")]
 pub fn has_no_active_conns_ipc() -> bool {
     let rt = match hbb_common::tokio::runtime::Runtime::new() {
@@ -2245,6 +2330,7 @@ pub fn has_no_active_conns_ipc() -> bool {
         let uids = crate::platform::get_logged_in_uids();
         // Check each user's server — fail closed if any has active connections
         for uid in uids {
+            let server_running = mac_server_process_running(uid);
             if let Ok(mut conn) = crate::ipc::connect_for_uid(1000, uid, "").await {
                 if conn
                     .send(&crate::ipc::Data::HasNoActiveConns(None))
@@ -2259,14 +2345,23 @@ pub fn has_no_active_conns_ipc() -> bool {
                             return false; // Explicit active connections
                         }
                         _ => {
-                            return false; // Timeout/error/unexpected — fail closed
+                            if !mac_update_allowed(server_running, MacIpcProbe::Unavailable) {
+                                return false;
+                            }
+                            continue;
                         }
                     }
                 } else {
-                    return false; // Send failed — fail closed
+                    if !mac_update_allowed(server_running, MacIpcProbe::Unavailable) {
+                        return false;
+                    }
+                    continue;
                 }
             } else {
-                return false; // Connection failed — fail closed
+                if !mac_update_allowed(server_running, MacIpcProbe::Unavailable) {
+                    return false;
+                }
+                continue;
             }
         }
         true // All users explicitly confirmed no active connections
