@@ -999,6 +999,8 @@ fn start_auto_update_check() -> Sender<UpdateMsg> {
 }
 
 fn start_auto_update_check_(rx_msg: Receiver<UpdateMsg>) {
+    #[cfg(target_os = "macos")]
+    consume_mac_update_result();
     let started_at = Instant::now();
     let mut startup_check_pending = true;
     let mut last_check_time = None;
@@ -2339,25 +2341,43 @@ pub fn has_no_active_conns_ipc() -> bool {
                 {
                     match conn.next_timeout(1000).await {
                         Ok(Some(crate::ipc::Data::HasNoActiveConns(Some(true)))) => {
-                            // Explicit no active connections — safe to continue
+                            log::info!(
+                                "[root-update] session probe uid={} server_running={} result=idle",
+                                uid,
+                                server_running
+                            );
                         }
                         Ok(Some(crate::ipc::Data::HasNoActiveConns(Some(false)))) => {
-                            return false; // Explicit active connections
+                            log::info!(
+                                "[root-update] session probe uid={} server_running={} result=active",
+                                uid,
+                                server_running
+                            );
+                            return false;
                         }
                         _ => {
-                            if !mac_update_allowed(server_running, MacIpcProbe::Unavailable) {
-                                return false;
-                            }
-                            continue;
+                            log::warn!(
+                                "[root-update] session probe uid={} server_running={} result=invalid-response",
+                                uid,
+                                server_running
+                            );
+                            return false;
                         }
                     }
                 } else {
-                    if !mac_update_allowed(server_running, MacIpcProbe::Unavailable) {
-                        return false;
-                    }
-                    continue;
+                    log::warn!(
+                        "[root-update] session probe uid={} server_running={} result=send-failed",
+                        uid,
+                        server_running
+                    );
+                    return false;
                 }
             } else {
+                log::info!(
+                    "[root-update] session probe uid={} server_running={} result=unavailable",
+                    uid,
+                    server_running
+                );
                 if !mac_update_allowed(server_running, MacIpcProbe::Unavailable) {
                     return false;
                 }
@@ -2464,7 +2484,7 @@ fn wait_for_mac_schedule_change(rx: &Receiver<()>, interval: Option<Duration>) -
 #[cfg(target_os = "macos")]
 fn consume_mac_update_result() {
     for _ in 0..600 {
-        let Some((result, claimed)) = crate::platform::consume_root_update_result() else {
+        let Some((result, claimed)) = crate::platform::consume_update_result() else {
             return;
         };
         if result.status == "pending" {
@@ -2476,7 +2496,7 @@ fn consume_mac_update_result() {
                 log::warn!("[root-update] terminal update result was not atomically claimed");
                 return;
             }
-            if let Err(err) = crate::platform::clear_claimed_root_update_result() {
+            if let Err(err) = crate::platform::clear_claimed_update_result() {
                 log::warn!("[root-update] Failed to clear reported update result: {err}");
             }
             return;
@@ -2641,7 +2661,7 @@ pub fn check_update_as_root() -> ResultType<bool> {
         },
         command_id: None,
     };
-    let result = crate::platform::update_from_dmg_as_root(&tmp_path, &version, &event);
+    let result = crate::platform::update_from_dmg_as_root(&tmp_path, &version, &event, 0);
     // Clean up download directory
     if let Err(e) = std::fs::remove_dir_all(&private_tmp) {
         log::warn!(

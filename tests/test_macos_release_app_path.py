@@ -46,6 +46,114 @@ def macos_rename_script() -> str:
 
 
 class MacosReleaseAppPathTest(unittest.TestCase):
+    def test_branded_bundle_ipc_authorization_uses_the_current_executable(self) -> None:
+        source = (REPO_ROOT / "src/ipc/auth.rs").read_text(encoding="utf-8")
+        helper = source[
+            source.index("fn macos_gui_service_bundle_siblings") :
+            source.index("#[cfg(target_os = \"windows\")]", source.index("fn macos_gui_service_bundle_siblings"))
+        ]
+        function = source[
+            source.index("pub(crate) fn authorize_user_server_process") :
+            source.index("#[cfg(windows)]", source.index("pub(crate) fn authorize_user_server_process"))
+        ]
+
+        self.assertIn('OsStr::new("MacOS")', helper)
+        self.assertIn('OsStr::new("Contents")', helper)
+        self.assertIn('OsStr::new("service")', helper)
+        self.assertIn("bundle_dir.file_stem()", helper)
+        self.assertIn("ensure_macos_user_server_peer_executable", function)
+        self.assertNotIn('PathBuf::from(format!("/Applications/', function)
+
+    def test_root_updater_supports_managed_and_standalone_install_topologies(self) -> None:
+        source = (REPO_ROOT / "src/platform/macos.rs").read_text(encoding="utf-8")
+
+        self.assertIn("enum MacInstallTopology", source)
+        self.assertIn("MacInstallTopology::Managed", source)
+        self.assertIn("MacInstallTopology::Standalone", source)
+        self.assertIn("inconsistent launchd plist installation", source)
+        self.assertIn('MacInstallTopology::Managed => "managed"', source)
+        self.assertIn('MacInstallTopology::Standalone => "standalone"', source)
+        self.assertIn('[ "$install_topology" = "managed" ]', source)
+        self.assertIn("standalone bundle verification failed", source)
+        self.assertIn("ensure_standalone_update_state_clean", source)
+        residue_check = source[
+            source.index("fn ensure_standalone_update_state_clean") :
+            source.index("fn backup_update_plist", source.index("fn ensure_standalone_update_state_clean"))
+        ]
+        self.assertIn("launchctl_job_loaded", residue_check)
+        self.assertIn('format!("system/{}", daemon_label)', residue_check)
+        self.assertIn('format!("gui/{}/{}", uid, agent_label)', residue_check)
+        self.assertIn('format!("user/{}/{}", uid, agent_label)', residue_check)
+        self.assertIn('format!("login/{}/{}", loginwindow_asid, agent_label)', residue_check)
+        self.assertIn("root_managed_process_running", residue_check)
+        self.assertIn("service_ipc_path", residue_check)
+        self.assertIn("clear_stale_service_ipc_state", residue_check)
+        updater = (REPO_ROOT / "src/updater.rs").read_text(encoding="utf-8")
+        start = updater.index("fn start_auto_update_check_")
+        end = updater.index("\n}\n", start)
+        self.assertIn("consume_mac_update_result()", updater[start:end])
+
+    def test_root_update_shell_template_has_valid_syntax(self) -> None:
+        source = (REPO_ROOT / "src/platform/macos.rs").read_text(encoding="utf-8")
+        match = re.search(
+            r'let script = format!\(\s*r#"(?P<script>.*?)"#,\s*app_name =',
+            source,
+            re.DOTALL,
+        )
+        self.assertIsNotNone(match)
+        script = match.group("script")
+        script = script.replace("{{", "__OPEN_BRACE__").replace("}}", "__CLOSE_BRACE__")
+        script = re.sub(r"\{[a-z_]+\}", "fixture", script)
+        script = script.replace("__OPEN_BRACE__", "{").replace("__CLOSE_BRACE__", "}")
+        subprocess.run(["bash", "-n"], input=script, text=True, check=True)
+
+    def test_standalone_update_result_is_delivered_to_the_requesting_user(self) -> None:
+        source = (REPO_ROOT / "src/platform/macos.rs").read_text(encoding="utf-8")
+
+        self.assertIn("USER_UPDATE_RESULT_ROOT", source)
+        self.assertIn("ensure_user_update_result_directory", source)
+        self.assertNotIn('/Users/Shared/.rustdeskupdate_result-', source)
+        self.assertIn("update_result_paths_for_uid", source)
+        self.assertIn("requesting_uid", source)
+        self.assertIn('chown "$result_uid" "$result_tmp"', source)
+        self.assertIn("consume_update_result", source)
+        self.assertNotIn("pub fn consume_root_update_result", source)
+
+    def test_standalone_update_verifies_relaunched_gui_before_commit(self) -> None:
+        source = (REPO_ROOT / "src/platform/macos.rs").read_text(encoding="utf-8")
+        standalone_verify = source.index("standalone bundle verification failed")
+        installed_result = source.index(
+            'write_result_file installed "$installed_result_stage"', standalone_verify
+        )
+        transaction = source[standalone_verify:installed_result]
+
+        self.assertIn("relaunch_gui", transaction)
+        self.assertIn("gui_snapshot_stable", source)
+        self.assertIn("standalone GUI failed readiness check", transaction)
+
+    def test_installed_result_publish_is_the_transaction_commit_point(self) -> None:
+        source = (REPO_ROOT / "src/platform/macos.rs").read_text(encoding="utf-8")
+        stage = source.index('write_result_file installed "$installed_result_stage"')
+        publish = source.index("if ! publish_installed_result", stage)
+        rollback_disabled = source.index("rollback_done=1", publish)
+        bundle_committed = source.index("bundle_swapped=0", rollback_disabled)
+        signal_blocked = source.index("trap '' HUP INT TERM", stage)
+        signal_restored = source.index("trap - HUP INT TERM", bundle_committed)
+
+        self.assertLess(stage, publish)
+        self.assertLess(signal_blocked, publish)
+        self.assertLess(publish, rollback_disabled)
+        self.assertLess(rollback_disabled, bundle_committed)
+        self.assertLess(bundle_committed, signal_restored)
+        self.assertNotIn("write_result installed", source[stage:publish])
+
+    def test_root_updater_binds_the_staged_bundle_to_the_target_build(self) -> None:
+        source = (REPO_ROOT / "src/platform/macos.rs").read_text(encoding="utf-8")
+
+        self.assertIn("Print :CFBundleShortVersionString", source)
+        self.assertIn("Print :CFBundleVersion", source)
+        self.assertIn("staged bundle build mismatch", source)
+
     def test_root_updater_supports_the_configured_product_name(self) -> None:
         product_name = macos_product_name()
         source = (REPO_ROOT / "src/platform/macos.rs").read_text(encoding="utf-8")

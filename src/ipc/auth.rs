@@ -72,14 +72,7 @@ pub(crate) fn portable_service_listener_security_attributes() -> io::Result<Secu
 
 #[cfg(target_os = "macos")]
 #[inline]
-fn macos_service_ipc_allows_gui_and_service_binaries(
-    peer_exe: &Path,
-    current_exe: &Path,
-    postfix: &str,
-) -> bool {
-    if postfix != crate::POSTFIX_SERVICE {
-        return false;
-    }
+fn macos_gui_service_bundle_siblings(peer_exe: &Path, current_exe: &Path) -> bool {
     let Some(peer_dir) = peer_exe.parent() else {
         return false;
     };
@@ -90,10 +83,21 @@ fn macos_service_ipc_allows_gui_and_service_binaries(
         return false;
     }
 
-    // On installed macOS builds, `_service` is listened by the `service` binary while the GUI
-    // process connects from the app executable within the same app bundle.
-    let gui_exe_name = std::ffi::OsString::from(crate::get_app_name());
-    let gui_exe = gui_exe_name.as_os_str();
+    let Some(contents_dir) = current_dir.parent() else {
+        return false;
+    };
+    let Some(bundle_dir) = contents_dir.parent() else {
+        return false;
+    };
+    if current_dir.file_name() != Some(std::ffi::OsStr::new("MacOS"))
+        || contents_dir.file_name() != Some(std::ffi::OsStr::new("Contents"))
+        || bundle_dir.extension() != Some(std::ffi::OsStr::new("app"))
+    {
+        return false;
+    }
+    let Some(gui_exe) = bundle_dir.file_stem() else {
+        return false;
+    };
     let service_exe = std::ffi::OsStr::new("service");
     let allowed_exe = [Some(gui_exe), Some(service_exe)];
     let peer_name = peer_exe.file_name();
@@ -104,6 +108,16 @@ fn macos_service_ipc_allows_gui_and_service_binaries(
         && allowed_exe
             .iter()
             .any(|name| os_str_eq_ignore_ascii_case(current_name, *name))
+}
+
+#[cfg(target_os = "macos")]
+#[inline]
+fn macos_service_ipc_allows_gui_and_service_binaries(
+    peer_exe: &Path,
+    current_exe: &Path,
+    postfix: &str,
+) -> bool {
+    postfix == crate::POSTFIX_SERVICE && macos_gui_service_bundle_siblings(peer_exe, current_exe)
 }
 
 #[cfg(target_os = "windows")]
@@ -504,6 +518,25 @@ pub(crate) fn ensure_peer_executable_matches_current_by_pid_opt(
     ensure_peer_executable_matches_current_by_pid(peer_pid, postfix)
 }
 
+#[cfg(target_os = "macos")]
+#[inline]
+fn ensure_macos_user_server_peer_executable(peer_pid: Option<u32>) -> ResultType<()> {
+    let peer_pid = peer_pid.ok_or_else(|| anyhow!("Failed to resolve user IPC peer pid"))?;
+    let peer_exe = peer_exe_canonical_path_by_pid(peer_pid)?;
+    let current_exe = current_exe_canonical_path()?;
+    if executable_paths_match(&peer_exe, &current_exe)
+        || macos_gui_service_bundle_siblings(&peer_exe, &current_exe)
+    {
+        return Ok(());
+    }
+    bail!(
+        "User IPC peer executable mismatch: peer_pid={}, peer_exe='{}', current_exe='{}'",
+        peer_pid,
+        peer_exe.display(),
+        current_exe.display()
+    )
+}
+
 #[cfg(target_os = "linux")]
 #[inline]
 pub(crate) fn ensure_peer_executable_matches_current_by_fd(
@@ -601,21 +634,16 @@ pub(crate) fn authorize_user_server_process(
     if peer_uid != Some(expected_uid) {
         return false;
     }
-    let Some(peer_pid) = peer_pid else {
+    if let Err(err) = ensure_macos_user_server_peer_executable(peer_pid) {
+        log::warn!(
+            "Rejected user IPC peer for uid {} due to executable mismatch: peer_pid={:?}, err={}",
+            expected_uid,
+            peer_pid,
+            err
+        );
         return false;
-    };
-    let Ok(peer_exe) = peer_exe_canonical_path_by_pid(peer_pid) else {
-        return false;
-    };
-    let expected_path = PathBuf::from(format!(
-        "/Applications/{}.app/Contents/MacOS/{}",
-        crate::get_app_name(),
-        crate::get_app_name()
-    ));
-    let Ok(expected_path) = fs::canonicalize(expected_path) else {
-        return false;
-    };
-    paths_refer_to_same_file(&peer_exe, &expected_path)
+    }
+    true
 }
 
 #[cfg(windows)]
@@ -957,6 +985,23 @@ mod tests {
             Some(std::ffi::OsStr::new("RustDesk")),
             Some(std::ffi::OsStr::new("service"))
         ));
+    }
+
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn test_macos_gui_service_bundle_siblings() {
+        let gui =
+            std::path::Path::new("/Applications/RustDesk Yan.app/Contents/MacOS/RustDesk Yan");
+        let service = std::path::Path::new("/Applications/RustDesk Yan.app/Contents/MacOS/service");
+        let other = std::path::Path::new("/Applications/Other.app/Contents/MacOS/Other");
+        let arbitrary =
+            std::path::Path::new("/Applications/RustDesk Yan.app/Contents/MacOS/helper");
+
+        assert!(super::macos_gui_service_bundle_siblings(gui, service));
+        assert!(super::macos_gui_service_bundle_siblings(service, gui));
+        assert!(super::macos_gui_service_bundle_siblings(gui, gui));
+        assert!(!super::macos_gui_service_bundle_siblings(gui, other));
+        assert!(!super::macos_gui_service_bundle_siblings(gui, arbitrary));
     }
 
     #[cfg(all(windows, not(feature = "flutter")))]

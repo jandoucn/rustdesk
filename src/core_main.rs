@@ -396,14 +396,20 @@ pub fn core_main() -> Option<Vec<String>> {
             use crate::platform;
             if args[0] == "--update-dmg-as-root" {
                 let pending_event = base::update::PendingUpdateEvent::from_cli_args(&args);
+                let requesting_uid = args
+                    .iter()
+                    .position(|arg| arg == "--update-requesting-uid")
+                    .and_then(|index| args.get(index + 1))
+                    .and_then(|value| value.parse::<u32>().ok());
                 let result = if !is_root() {
                     Err(hbb_common::anyhow::anyhow!("root update requires root"))
                 } else if args.len() < 3 {
                     Err(hbb_common::anyhow::anyhow!(
                         "root update arguments are incomplete"
                     ))
-                } else if let Some(event) = pending_event {
-                    platform::update_from_dmg_as_root(&args[1], &args[2], &event)
+                } else if let (Some(event), Some(requesting_uid)) = (pending_event, requesting_uid)
+                {
+                    platform::update_from_dmg_as_root(&args[1], &args[2], &event, requesting_uid)
                 } else {
                     Err(hbb_common::anyhow::anyhow!("root update event is invalid"))
                 };

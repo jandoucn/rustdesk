@@ -256,8 +256,14 @@ class ReleaseAndRemoteUiContractTest(unittest.TestCase):
         macos = (ROOT / "src/platform/macos.rs").read_text()
         self.assertIn('launch_privileged_process(', windows)
         self.assertIn('"{} --update {}"', windows)
-        self.assertIn('launchctl asuser <uid> open -n -a /Applications/RustDesk.app/', macos)
-        self.assertIn('write_result installed', macos)
+        self.assertIn(
+            'launchctl asuser "$gui_uid" /usr/bin/open -a "{app_bundle}"', macos
+        )
+        staged = macos.index('write_result_file installed "$installed_result_stage"')
+        published = macos.index("if ! publish_installed_result", staged)
+        rollback_disabled = macos.index("rollback_done=1", published)
+        self.assertLess(staged, published)
+        self.assertLess(published, rollback_disabled)
 
     def test_verified_update_command_supports_android_but_not_ios(self):
         source = (ROOT / "src/flutter_ffi.rs").read_text()
@@ -369,7 +375,9 @@ class ReleaseAndRemoteUiContractTest(unittest.TestCase):
 
     def test_macos_detached_update_preserves_command_id(self):
         source = (ROOT / "src/platform/macos.rs").read_text()
-        script = source[source.index("write_result() {{") : source.index("bootstrap_agent() {{")]
+        script = source[
+            source.index("write_result_file() {{") : source.index("bootstrap_agent() {{")
+        ]
 
         self.assertIn("printf 'command_id=%s\\n' '{command_id}'", script)
         self.assertIn("command_id = event.command_id.as_deref().unwrap_or_default()", source)

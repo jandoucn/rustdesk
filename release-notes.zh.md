@@ -1,6 +1,11 @@
 ## 版本变化
 
-本次发布版本为 `1.5.2`，构建号为 `20261003.2`，构建序号为 `2026100302`。
+本次发布版本为 `1.5.2`，构建号为 `20261003.3`，构建序号为 `2026100303`。
+
+- 修复 `RustDesk Yan.app` 在线更新时 IPC 鉴权仍按 `RustDesk.app` 固定路径校验，导致空闲状态被误判为不可用的问题。
+- macOS 更新器现在区分已安装服务的 managed 模式和直接拖入 Applications 的 standalone 模式；standalone 不再因缺少 launchd plist 直接失败。
+- standalone 覆盖安装会保留旧 bundle，核对目标版本和构建号、验证代码签名，并确认新 GUI 稳定启动后才提交；启动失败会恢复旧 bundle 并验证旧 GUI 可用。
+- standalone 更新终态改由发起更新的 macOS 用户原子接收、上报和清理，避免 `/var/root` 权限导致首次更新后永久锁死后续更新。
 
 - 新语义版本的可见构建尾号从 `.1` 重新开始；只有同一语义版本、同一构建日期已有发布时才顺延。Android `versionCode` 独立保持单调递增。
 - Android 发布构建显式同步 APK 内部 `versionName` 和 `versionCode`，上传前读取 manifest 校验；安装时拒绝同版或降级包，并始终进入系统覆盖安装确认界面。
