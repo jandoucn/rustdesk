@@ -324,6 +324,7 @@ class ReleaseAndRemoteUiContractTest(unittest.TestCase):
         self.assertIn("installerReturnWithoutVersionChangeIsTerminalFailure", state_test)
         self.assertIn("upgradedVersionWinsForBothInstallerReturnAndColdStart", state_test)
         workflow = (ROOT / ".github/workflows/flutter-build.yml").read_text()
+        self.assertIn('gradle-version: "8.11.1"', workflow)
         self.assertIn("gradle -p flutter/android testReleaseUnitTest --no-daemon", workflow)
         self.assertIn("longVersionCode", android)
         self.assertIn("update_apk_version_not_newer", android)

@@ -1296,6 +1296,11 @@ jobs:
           toolchain: ${{ env.RUST_VERSION }}
           components: "rustfmt"
 
+      - name: Setup Gradle 8.11.1
+        uses: gradle/actions/setup-gradle@0b6dd653ba04f4f93bf581ec31e66cbd7dcb644d # v4
+        with:
+          gradle-version: "8.11.1"
+
       - name: 运行 Android 更新状态机测试
         shell: bash
         run: |
