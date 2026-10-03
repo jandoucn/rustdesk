@@ -301,8 +301,30 @@ class ReleaseAndRemoteUiContractTest(unittest.TestCase):
         android = (ROOT / "flutter/android/app/src/main/kotlin/com/carriez/flutter_hbb/MainActivity.kt").read_text()
         self.assertIn('"install_verified_apk"', android)
         self.assertIn("FileProvider.getUriForFile", android)
-        self.assertIn("USER_ACTION_REQUIRED", android)
-        self.assertNotIn("USER_ACTION_NOT_REQUIRED", android)
+        submit = android[
+            android.index("private fun submitVerifiedApk(") : android.index(
+                "private fun openPackageInstaller("
+            )
+        ]
+        self.assertIn("openPackageInstaller(staged)", submit)
+        self.assertNotIn("PackageInstaller.SessionParams", submit)
+        self.assertIn("Intent.FLAG_GRANT_READ_URI_PERMISSION", android)
+        self.assertIn("Intent.ACTION_VIEW", android)
+        self.assertIn("ClipData.newRawUri", android)
+        self.assertIn("Intent.ACTION_INSTALL_PACKAGE", android)
+        self.assertIn("Intent.EXTRA_RETURN_RESULT", android)
+        self.assertIn("startActivityForResult", android)
+        self.assertIn("KEY_PENDING_UPDATE_VERSION_CODE", android)
+        self.assertIn("KEY_PENDING_UPDATE_PHASE", android)
+        self.assertIn("AndroidUpdateInstallState.nextAction", android)
+        state_test = (
+            ROOT
+            / "flutter/android/app/src/test/kotlin/com/carriez/flutter_hbb/AndroidUpdateInstallStateTest.kt"
+        ).read_text()
+        self.assertIn("installerReturnWithoutVersionChangeIsTerminalFailure", state_test)
+        self.assertIn("upgradedVersionWinsForBothInstallerReturnAndColdStart", state_test)
+        workflow = (ROOT / ".github/workflows/flutter-build.yml").read_text()
+        self.assertIn("gradle -p flutter/android testReleaseUnitTest --no-daemon", workflow)
         self.assertIn("longVersionCode", android)
         self.assertIn("update_apk_version_not_newer", android)
 

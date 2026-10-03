@@ -10,13 +10,12 @@ package com.carriez.flutter_hbb
 import ffi.FFI
 
 import android.app.Activity
-import android.app.PendingIntent
+import android.content.ClipData
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.content.ServiceConnection
 import android.content.ClipboardManager
-import android.content.pm.PackageInstaller
 import android.content.pm.PackageInfo
 import android.content.pm.PackageManager
 import android.os.Bundle
@@ -60,11 +59,14 @@ class MainActivity : FlutterActivity() {
             get() = _rdClipboardManager;
 
         private const val KEY_PENDING_UPDATE_APK = "KEY_PENDING_UPDATE_APK"
+        private const val KEY_PENDING_UPDATE_VERSION_CODE = "KEY_PENDING_UPDATE_VERSION_CODE"
+        private const val KEY_PENDING_UPDATE_PHASE = "KEY_PENDING_UPDATE_PHASE"
         private const val KEY_UPDATE_INSTALL_STATUS = "KEY_UPDATE_INSTALL_STATUS"
         private const val KEY_UPDATE_INSTALL_ERROR = "KEY_UPDATE_INSTALL_ERROR"
         private const val STATUS_PERMISSION_REQUIRED = "permission_required"
-        private const val STATUS_INSTALLING = "installing"
         private const val ERROR_APK_VERSION_NOT_NEWER = "update_apk_version_not_newer"
+        private const val REQ_UPDATE_UNKNOWN_SOURCES = 305
+        private const val REQ_UPDATE_INSTALL_PACKAGE = 306
 
         fun emitUpdateInstallStatus(context: Context, status: String, error: String) {
             context.getSharedPreferences(KEY_SHARED_PREFERENCES, Context.MODE_PRIVATE)
@@ -100,6 +102,17 @@ class MainActivity : FlutterActivity() {
         val children: List<ExportSource>?
     )
 
+    private data class PendingUpdate(
+        val path: String,
+        val targetVersionCode: Long,
+        val phase: String
+    )
+
+    private data class StagedUpdate(
+        val file: File,
+        val targetVersionCode: Long
+    )
+
     private var pendingPicker: PendingPicker? = null
 
     private var isAudioStart = false
@@ -130,6 +143,7 @@ class MainActivity : FlutterActivity() {
 
     override fun onResume() {
         super.onResume()
+        resumePendingUpdateInstall(AndroidUpdateInstallState.Event.RESUME)
         val inputPer = InputService.isOpen
         activity.runOnUiThread {
             flutterMethodChannel?.invokeMethod(
@@ -144,7 +158,6 @@ class MainActivity : FlutterActivity() {
                 )
             }
         }
-        resumePendingUpdateInstall()
     }
 
     private fun requestMediaProjection() {
@@ -156,6 +169,14 @@ class MainActivity : FlutterActivity() {
 
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode == REQ_UPDATE_UNKNOWN_SOURCES) {
+            resumePendingUpdateInstall(AndroidUpdateInstallState.Event.PERMISSION_RESULT)
+            return
+        }
+        if (requestCode == REQ_UPDATE_INSTALL_PACKAGE) {
+            resumePendingUpdateInstall(AndroidUpdateInstallState.Event.INSTALLER_RESULT)
+            return
+        }
         if (requestCode == REQ_IMPORT_FILES) {
             val pending = pendingPicker as? PendingPicker.ImportFiles ?: return
             pendingPicker = null
@@ -1023,7 +1044,8 @@ class MainActivity : FlutterActivity() {
             var staged: File? = null
             try {
                 val source = validatePrivateUpdateApk(path)
-                val stagedFile = stageVerifiedApk(source)
+                val stagedUpdate = stageVerifiedApk(source)
+                val stagedFile = stagedUpdate.file
                 staged = stagedFile
                 if (!source.delete()) {
                     Log.w(logTag, "Verified source APK could not be removed after staging")
@@ -1031,19 +1053,28 @@ class MainActivity : FlutterActivity() {
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O &&
                     !packageManager.canRequestPackageInstalls()
                 ) {
-                    rememberPendingUpdate(stagedFile)
+                    rememberPendingUpdate(
+                        stagedFile,
+                        stagedUpdate.targetVersionCode,
+                        AndroidUpdateInstallState.PHASE_PERMISSION
+                    )
                     emitUpdateInstallStatus(this, STATUS_PERMISSION_REQUIRED, "")
                     runOnUiThread {
                         try {
-                            startActivity(Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES).apply {
-                                data = Uri.parse("package:$packageName")
-                            })
+                            startActivityForResult(
+                                Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES).apply {
+                                    data = Uri.parse("package:$packageName")
+                                },
+                                REQ_UPDATE_UNKNOWN_SOURCES
+                            )
                             result.success(mapOf("status" to STATUS_PERMISSION_REQUIRED))
                         } catch (error: Exception) {
-                            clearPendingUpdate()
-                            stagedFile.delete()
-                            emitUpdateInstallStatus(
-                                this,
+                            finishPendingUpdate(
+                                PendingUpdate(
+                                    stagedFile.path,
+                                    stagedUpdate.targetVersionCode,
+                                    AndroidUpdateInstallState.PHASE_PERMISSION
+                                ),
                                 UpdateInstallReceiver.STATUS_FAILED,
                                 "open_unknown_sources_settings_failed"
                             )
@@ -1057,10 +1088,27 @@ class MainActivity : FlutterActivity() {
                         }
                     }
                 } else {
-                    val status = submitVerifiedApk(stagedFile)
                     runOnUiThread {
-                        updateInstallBusy = false
-                        result.success(mapOf("status" to status))
+                        try {
+                            val status = submitVerifiedApk(
+                                stagedFile,
+                                stagedUpdate.targetVersionCode
+                            )
+                            result.success(mapOf("status" to status))
+                        } catch (error: Exception) {
+                            finishPendingUpdate(
+                                PendingUpdate(
+                                    stagedFile.path,
+                                    stagedUpdate.targetVersionCode,
+                                    AndroidUpdateInstallState.PHASE_INSTALLER
+                                ),
+                                UpdateInstallReceiver.STATUS_FAILED,
+                                "open_package_installer_failed"
+                            )
+                            result.error("open_package_installer_failed", error.message, null)
+                        } finally {
+                            updateInstallBusy = false
+                        }
                     }
                 }
             } catch (error: Exception) {
@@ -1084,28 +1132,62 @@ class MainActivity : FlutterActivity() {
         }
     }
 
-    private fun resumePendingUpdateInstall() {
-        if (updateInstallBusy ||
-            (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O &&
-                !packageManager.canRequestPackageInstalls())
-        ) {
-            return
+    private fun resumePendingUpdateInstall(event: AndroidUpdateInstallState.Event) {
+        if (updateInstallBusy) return
+        val pending = readPendingUpdate() ?: return
+        val permissionGranted = Build.VERSION.SDK_INT < Build.VERSION_CODES.O ||
+            packageManager.canRequestPackageInstalls()
+        when (AndroidUpdateInstallState.nextAction(
+            phase = pending.phase,
+            event = event,
+            permissionGranted = permissionGranted,
+            installedVersionCode = installedVersionCode(),
+            targetVersionCode = pending.targetVersionCode
+        )) {
+            AndroidUpdateInstallState.Action.WAIT -> return
+            AndroidUpdateInstallState.Action.REPORT_INSTALLED -> {
+                finishPendingUpdate(pending, UpdateInstallReceiver.STATUS_INSTALLED, "")
+                return
+            }
+            AndroidUpdateInstallState.Action.REPORT_FAILED -> {
+                finishPendingUpdate(
+                    pending,
+                    UpdateInstallReceiver.STATUS_FAILED,
+                    if (pending.phase == AndroidUpdateInstallState.PHASE_PERMISSION) {
+                        "unknown_sources_permission_denied"
+                    } else {
+                        "aborted"
+                    }
+                )
+                return
+            }
+            AndroidUpdateInstallState.Action.OPEN_INSTALLER -> Unit
         }
-        val pendingPath = getSharedPreferences(KEY_SHARED_PREFERENCES, MODE_PRIVATE)
-            .getString(KEY_PENDING_UPDATE_APK, null) ?: return
         updateInstallBusy = true
         thread {
-            var staged: File? = null
             try {
-                val stagedFile = validateStagedUpdateApk(pendingPath)
-                staged = stagedFile
-                submitVerifiedApk(stagedFile)
+                val stagedFile = validateStagedUpdateApk(
+                    pending.path,
+                    pending.targetVersionCode
+                )
+                runOnUiThread {
+                    try {
+                        submitVerifiedApk(stagedFile, pending.targetVersionCode)
+                    } catch (error: Exception) {
+                        Log.e(logTag, "Unable to open verified update installer", error)
+                        finishPendingUpdate(
+                            pending,
+                            UpdateInstallReceiver.STATUS_FAILED,
+                            "open_package_installer_failed"
+                        )
+                    } finally {
+                        updateInstallBusy = false
+                    }
+                }
             } catch (error: Exception) {
                 Log.e(logTag, "Unable to resume verified update installation", error)
-                clearPendingUpdate()
-                staged?.delete()
-                emitUpdateInstallStatus(
-                    this,
+                finishPendingUpdate(
+                    pending,
                     UpdateInstallReceiver.STATUS_FAILED,
                     if (error.message == ERROR_APK_VERSION_NOT_NEWER) {
                         ERROR_APK_VERSION_NOT_NEWER
@@ -1113,7 +1195,6 @@ class MainActivity : FlutterActivity() {
                         "resume_install_failed"
                     }
                 )
-            } finally {
                 updateInstallBusy = false
             }
         }
@@ -1129,18 +1210,21 @@ class MainActivity : FlutterActivity() {
         return canonical
     }
 
-    private fun validateStagedUpdateApk(path: String): File {
+    private fun validateStagedUpdateApk(path: String, expectedVersionCode: Long? = null): File {
         val stagedRoot = File(filesDir, "verified_updates").canonicalFile
         val file = File(path)
         val canonical = file.canonicalFile
         if (file.absoluteFile != canonical || !isDescendant(canonical, stagedRoot)) {
             throw SecurityException("Pending APK is outside the verified update directory")
         }
-        validateApkFile(canonical)
+        val targetVersionCode = validateApkFile(canonical)
+        if (expectedVersionCode != null && targetVersionCode != expectedVersionCode) {
+            throw SecurityException("Pending update version changed after verification")
+        }
         return canonical
     }
 
-    private fun validateApkFile(file: File) {
+    private fun validateApkFile(file: File): Long {
         if (!file.isFile || !file.canRead() || file.length() <= 0L ||
             !file.name.endsWith(".apk", ignoreCase = true)
         ) {
@@ -1152,9 +1236,15 @@ class MainActivity : FlutterActivity() {
             throw SecurityException("Verified update APK belongs to another application")
         }
         val installed = packageManager.getPackageInfo(packageName, 0)
-        if (packageVersionCode(archive) <= packageVersionCode(installed)) {
+        val targetVersionCode = packageVersionCode(archive)
+        if (targetVersionCode <= packageVersionCode(installed)) {
             throw IllegalArgumentException(ERROR_APK_VERSION_NOT_NEWER)
         }
+        return targetVersionCode
+    }
+
+    private fun installedVersionCode(): Long {
+        return packageVersionCode(packageManager.getPackageInfo(packageName, 0))
     }
 
     private fun packageVersionCode(info: PackageInfo): Long {
@@ -1178,7 +1268,7 @@ class MainActivity : FlutterActivity() {
         return file.path.startsWith(root.path + File.separator)
     }
 
-    private fun stageVerifiedApk(source: File): File {
+    private fun stageVerifiedApk(source: File): StagedUpdate {
         val updateDir = File(filesDir, "verified_updates")
         if (!updateDir.exists() && !updateDir.mkdirs()) {
             throw IllegalStateException("Unable to create verified update directory")
@@ -1191,64 +1281,25 @@ class MainActivity : FlutterActivity() {
                     output.fd.sync()
                 }
             }
-            validateStagedUpdateApk(staged.path)
-            return staged
+            val targetVersionCode = validateApkFile(staged)
+            return StagedUpdate(staged, targetVersionCode)
         } catch (error: Exception) {
             staged.delete()
             throw error
         }
     }
 
-    private fun submitVerifiedApk(staged: File): String {
-        clearPendingUpdate()
-        try {
-            val params = PackageInstaller.SessionParams(PackageInstaller.SessionParams.MODE_FULL_INSTALL)
-            params.setAppPackageName(packageName)
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                params.setInstallReason(PackageManager.INSTALL_REASON_USER)
-            }
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-                params.setRequireUserAction(
-                    PackageInstaller.SessionParams.USER_ACTION_REQUIRED
-                )
-            }
-            val installer = packageManager.packageInstaller
-            val sessionId = installer.createSession(params)
-            try {
-                installer.openSession(sessionId).use { session ->
-                    FileInputStream(staged).use { input ->
-                        session.openWrite("rustdesk-update.apk", 0, staged.length()).use { output ->
-                            input.copyTo(output)
-                            session.fsync(output)
-                        }
-                    }
-                    val statusIntent = Intent(this, UpdateInstallReceiver::class.java).apply {
-                        action = UpdateInstallReceiver.ACTION_UPDATE_INSTALL_STATUS
-                        data = Uri.parse("rustdesk-update://session/$sessionId")
-                        putExtra(UpdateInstallReceiver.EXTRA_STAGED_APK, staged.path)
-                    }
-                    val flags = PendingIntent.FLAG_UPDATE_CURRENT or
-                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-                            PendingIntent.FLAG_MUTABLE
-                        } else {
-                            0
-                        }
-                    val status = PendingIntent.getBroadcast(this, sessionId, statusIntent, flags)
-                    emitUpdateInstallStatus(this, STATUS_INSTALLING, "")
-                    session.commit(status.intentSender)
-                }
-            } catch (error: Exception) {
-                runCatching { installer.abandonSession(sessionId) }
-                throw error
-            }
-            return STATUS_INSTALLING
-        } catch (error: UnsupportedOperationException) {
-            openLegacyInstaller(staged)
-            return UpdateInstallReceiver.STATUS_CONFIRMATION_REQUIRED
-        }
+    private fun submitVerifiedApk(staged: File, targetVersionCode: Long): String {
+        rememberPendingUpdate(
+            staged,
+            targetVersionCode,
+            AndroidUpdateInstallState.PHASE_INSTALLER
+        )
+        openPackageInstaller(staged)
+        return UpdateInstallReceiver.STATUS_CONFIRMATION_REQUIRED
     }
 
-    private fun openLegacyInstaller(staged: File) {
+    private fun openPackageInstaller(staged: File) {
         val uri = FileProvider.getUriForFile(
             this,
             "$packageName.update-files",
@@ -1259,35 +1310,67 @@ class MainActivity : FlutterActivity() {
             UpdateInstallReceiver.STATUS_CONFIRMATION_REQUIRED,
             ""
         )
-        runOnUiThread {
-            try {
-                startActivity(Intent(Intent.ACTION_VIEW).apply {
-                    setDataAndType(uri, "application/vnd.android.package-archive")
-                    addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                })
-            } catch (error: Exception) {
-                Log.e(logTag, "Unable to open legacy package installer", error)
-                staged.delete()
-                emitUpdateInstallStatus(
-                    this,
-                    UpdateInstallReceiver.STATUS_FAILED,
-                    "open_package_installer_failed"
-                )
-            }
+        val installerIntent = Intent(Intent.ACTION_INSTALL_PACKAGE).apply {
+            setDataAndType(uri, "application/vnd.android.package-archive")
+            clipData = ClipData.newRawUri("RustDesk update", uri)
+            putExtra(Intent.EXTRA_RETURN_RESULT, true)
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        }
+        try {
+            startActivityForResult(installerIntent, REQ_UPDATE_INSTALL_PACKAGE)
+        } catch (error: android.content.ActivityNotFoundException) {
+            startActivityForResult(Intent(Intent.ACTION_VIEW).apply {
+                setDataAndType(uri, "application/vnd.android.package-archive")
+                clipData = ClipData.newRawUri("RustDesk update", uri)
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            }, REQ_UPDATE_INSTALL_PACKAGE)
         }
     }
 
-    private fun rememberPendingUpdate(staged: File) {
+    private fun rememberPendingUpdate(staged: File, targetVersionCode: Long, phase: String) {
         getSharedPreferences(KEY_SHARED_PREFERENCES, MODE_PRIVATE)
             .edit()
             .putString(KEY_PENDING_UPDATE_APK, staged.path)
+            .putLong(KEY_PENDING_UPDATE_VERSION_CODE, targetVersionCode)
+            .putString(KEY_PENDING_UPDATE_PHASE, phase)
             .apply()
+    }
+
+    private fun readPendingUpdate(): PendingUpdate? {
+        val prefs = getSharedPreferences(KEY_SHARED_PREFERENCES, MODE_PRIVATE)
+        val path = prefs.getString(KEY_PENDING_UPDATE_APK, null) ?: return null
+        val targetVersionCode = prefs.getLong(KEY_PENDING_UPDATE_VERSION_CODE, -1L)
+        val phase = prefs.getString(KEY_PENDING_UPDATE_PHASE, "").orEmpty()
+        if (targetVersionCode <= 0L ||
+            phase !in setOf(
+                AndroidUpdateInstallState.PHASE_PERMISSION,
+                AndroidUpdateInstallState.PHASE_INSTALLER
+            )
+        ) {
+            File(path).delete()
+            clearPendingUpdate()
+            emitUpdateInstallStatus(
+                this,
+                UpdateInstallReceiver.STATUS_FAILED,
+                "invalid_pending_update"
+            )
+            return null
+        }
+        return PendingUpdate(path, targetVersionCode, phase)
+    }
+
+    private fun finishPendingUpdate(pending: PendingUpdate, status: String, error: String) {
+        runCatching { File(pending.path).delete() }
+        clearPendingUpdate()
+        emitUpdateInstallStatus(this, status, error)
     }
 
     private fun clearPendingUpdate() {
         getSharedPreferences(KEY_SHARED_PREFERENCES, MODE_PRIVATE)
             .edit()
             .remove(KEY_PENDING_UPDATE_APK)
+            .remove(KEY_PENDING_UPDATE_VERSION_CODE)
+            .remove(KEY_PENDING_UPDATE_PHASE)
             .apply()
     }
 

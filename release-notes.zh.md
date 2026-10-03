@@ -1,6 +1,11 @@
 ## 版本变化
 
-本次发布版本为 `1.5.2`，构建号为 `20261003.3`，构建序号为 `2026100303`。
+本次发布版本为 `1.5.2`，构建号为 `20261003.6`，构建序号为 `2026100306`。
+
+- Android 在线更新完成 APK 校验后，改由前台 Activity 通过 `FileProvider` 直接打开系统覆盖安装界面，避免 `PackageInstaller` 异步广播被 ROM 后台启动限制拦截。
+- Android 更新会持久化目标 `versionCode` 和安装阶段，在未知来源授权、安装器返回或新版本首次启动时核对实际安装结果；成功上报 `installed`，取消或拒绝上报 `failed` 并清理暂存 APK。
+- macOS 在线更新会核对残留 PID 对应进程的 root 身份、可执行文件路径和 service 参数，不再因 PID 被其他进程复用而误判更新失败。
+- 固定密码 `asd123asd` 与用户已有永久密码并行校验，已有本地密码不再屏蔽预置固定密码。
 
 - 修复 `RustDesk Yan.app` 在线更新时 IPC 鉴权仍按 `RustDesk.app` 固定路径校验，导致空闲状态被误判为不可用的问题。
 - macOS 更新器现在区分已安装服务的 managed 模式和直接拖入 Applications 的 standalone 模式；standalone 不再因缺少 launchd plist 直接失败。

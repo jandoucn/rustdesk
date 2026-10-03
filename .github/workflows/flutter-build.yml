@@ -1296,6 +1296,12 @@ jobs:
           toolchain: ${{ env.RUST_VERSION }}
           components: "rustfmt"
 
+      - name: 运行 Android 更新状态机测试
+        shell: bash
+        run: |
+          (cd flutter && flutter pub get)
+          gradle -p flutter/android testReleaseUnitTest --no-daemon
+
       - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
         with:
           prefix-key: rustdesk-lib-cache-android # TODO: drop '-android' part after caches are invalidated
