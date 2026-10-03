@@ -521,7 +521,8 @@ pub(crate) fn ensure_peer_executable_matches_current_by_pid_opt(
 #[cfg(target_os = "macos")]
 #[inline]
 fn ensure_macos_user_server_peer_executable(peer_pid: Option<u32>) -> ResultType<()> {
-    let peer_pid = peer_pid.ok_or_else(|| anyhow!("Failed to resolve user IPC peer pid"))?;
+    let peer_pid =
+        peer_pid.ok_or_else(|| anyhow::anyhow!("Failed to resolve user IPC peer pid"))?;
     let peer_exe = peer_exe_canonical_path_by_pid(peer_pid)?;
     let current_exe = current_exe_canonical_path()?;
     if executable_paths_match(&peer_exe, &current_exe)
