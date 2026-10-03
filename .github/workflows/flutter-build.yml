@@ -1305,7 +1305,7 @@ jobs:
         shell: bash
         run: |
           (cd flutter && flutter pub get)
-          gradle -p flutter/android testReleaseUnitTest --no-daemon
+          gradle -p flutter/android :app:testReleaseUnitTest --no-daemon
 
       - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
         with:

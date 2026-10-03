@@ -87,6 +87,60 @@ class ReleaseMetadataTest(unittest.TestCase):
         self.assertEqual(resolved["build_number"], "20261002.2")
         self.assertEqual(resolved["android_version_code"], 2026100208)
 
+    def test_explicit_sequence_is_floor_after_failed_release_cleanup(self):
+        tags = [
+            f"v1.5.2-build-2026.10.03-{sequence:02d}"
+            for sequence in range(1, 6)
+        ]
+
+        resolved = self.metadata.resolve_release_metadata(
+            version="1.5.2",
+            build_date="20261003",
+            tags=tags,
+            previous_android_version_code=2026100307,
+            minimum_visible_sequence=8,
+        )
+
+        self.assertEqual(resolved["build_number"], "20261003.8")
+        self.assertEqual(resolved["build_seq"], 2026100308)
+        self.assertEqual(resolved["android_version_code"], 2026100308)
+
+    def test_metadata_floor_resets_for_a_new_semantic_version(self):
+        tags = ["v1.5.1-build-2026.10.03-06"]
+
+        floor = self.metadata.metadata_sequence_floor(
+            version="1.5.2",
+            build_date="20261003",
+            tags=tags,
+            build_seq=2026100306,
+        )
+
+        self.assertEqual(floor, 1)
+
+    def test_metadata_floor_keeps_explicit_retry_for_existing_version(self):
+        tags = ["v1.5.2-build-2026.10.03-05"]
+
+        floor = self.metadata.metadata_sequence_floor(
+            version="1.5.2",
+            build_date="20261003",
+            tags=tags,
+            build_seq=2026100308,
+        )
+
+        self.assertEqual(floor, 8)
+
+    def test_metadata_floor_resets_on_a_new_build_date(self):
+        tags = ["v1.5.2-build-2026.10.02-06"]
+
+        floor = self.metadata.metadata_sequence_floor(
+            version="1.5.2",
+            build_date="20261003",
+            tags=tags,
+            build_seq=2026100306,
+        )
+
+        self.assertEqual(floor, 1)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -46,11 +46,25 @@ def infer_previous_android_version_code(build_date, tags):
     return int(compact_date) * 100 + sum(max_sequence_by_version.values())
 
 
+def metadata_sequence_floor(version, build_date, tags, build_seq):
+    compact_date = _normalized_build_date(build_date)
+    if not any(
+        tag_version == version and tag_date == compact_date
+        for tag_version, tag_date, _ in _parsed_tags(tags)
+    ):
+        return 1
+    value = str(build_seq or "")
+    if re.fullmatch(r"\d{10}", value) and value[:8] == compact_date:
+        return int(value[-2:])
+    return 1
+
+
 def resolve_release_metadata(
     version,
     build_date,
     tags,
     previous_android_version_code=0,
+    minimum_visible_sequence=1,
 ):
     if re.fullmatch(r"\d+\.\d+\.\d+", str(version)) is None:
         raise ValueError("version must use X.Y.Z format")
@@ -61,7 +75,10 @@ def resolve_release_metadata(
         for tag_version, tag_date, sequence in parsed
         if tag_version == version and tag_date == compact_date
     ]
-    visible_sequence = max(sequences, default=0) + 1
+    visible_sequence = max(
+        max(sequences, default=0) + 1,
+        int(minimum_visible_sequence),
+    )
     if visible_sequence > 99:
         raise ValueError("visible build sequence exceeds two digits")
 
@@ -91,6 +108,12 @@ def _resolve(args):
     compact_date = _normalized_build_date(build_date)
     inferred_previous_code = infer_previous_android_version_code(compact_date, tags)
     minimum_code = int(metadata.get("android_version_code") or 0)
+    minimum_visible_sequence = metadata_sequence_floor(
+        version=str(metadata["version"]),
+        build_date=compact_date,
+        tags=tags,
+        build_seq=metadata.get("build_seq"),
+    )
     resolved = resolve_release_metadata(
         version=str(metadata["version"]),
         build_date=compact_date,
@@ -99,6 +122,7 @@ def _resolve(args):
             inferred_previous_code,
             minimum_code - 1,
         ),
+        minimum_visible_sequence=minimum_visible_sequence,
     )
     output = {**metadata, **resolved}
     _write_json(args.output, output)
