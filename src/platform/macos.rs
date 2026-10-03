@@ -1319,34 +1319,71 @@ fn loginwindow_asid() -> ResultType<Option<u32>> {
     Ok(None)
 }
 
+fn root_managed_process_identity_matches(
+    uid: Option<u32>,
+    executable: &Path,
+    args: &[String],
+    app_bundle: &Path,
+) -> bool {
+    uid == Some(0)
+        && executable.starts_with(app_bundle)
+        && (executable.file_name() == Some(std::ffi::OsStr::new("service"))
+            || args
+                .iter()
+                .any(|arg| arg == "--service" || arg == "--server"))
+}
+
 fn root_managed_process_running(app_bundle: &Path) -> ResultType<bool> {
     let app_bundle = std::fs::canonicalize(app_bundle)?;
     let current_pid = Pid::from_u32(std::process::id());
     let mut system = System::new();
     system.refresh_processes_specifics(ProcessRefreshKind::new());
     for process in system.processes().values() {
-        if process.pid() == current_pid || process.user_id().map(|uid| **uid as u32) != Some(0) {
+        if process.pid() == current_pid {
             continue;
         }
         let Ok(executable) = std::fs::canonicalize(process.exe()) else {
             continue;
         };
-        if !executable.starts_with(&app_bundle) {
-            continue;
-        }
-        let is_service_binary = executable.file_name() == Some(std::ffi::OsStr::new("service"));
-        let has_managed_arg = process
-            .cmd()
-            .iter()
-            .any(|arg| arg == "--service" || arg == "--server");
-        if is_service_binary || has_managed_arg {
+        if root_managed_process_identity_matches(
+            process.user_id().map(|uid| **uid as u32),
+            &executable,
+            process.cmd(),
+            &app_bundle,
+        ) {
             return Ok(true);
         }
     }
     Ok(false)
 }
 
-fn clear_stale_service_ipc_state(service_ipc_path: &Path) -> ResultType<()> {
+fn root_managed_process_running_for_pid(app_bundle: &Path, pid: u32) -> ResultType<bool> {
+    let app_bundle = std::fs::canonicalize(app_bundle)?;
+    let mut system = System::new();
+    system.refresh_processes_specifics(ProcessRefreshKind::new());
+    let Some(process) = system.process(Pid::from_u32(pid)) else {
+        return Ok(false);
+    };
+    let uid = process.user_id().map(|uid| **uid as u32);
+    if uid != Some(0) {
+        return Ok(false);
+    }
+    let executable = std::fs::canonicalize(process.exe()).map_err(|err| {
+        anyhow!(
+            "[root-update] failed to inspect residual service process {}: {}",
+            pid,
+            err
+        )
+    })?;
+    Ok(root_managed_process_identity_matches(
+        uid,
+        &executable,
+        process.cmd(),
+        &app_bundle,
+    ))
+}
+
+fn clear_stale_service_ipc_state(app_bundle: &Path, service_ipc_path: &Path) -> ResultType<()> {
     use std::os::unix::fs::FileTypeExt;
 
     let service_dir = service_ipc_path
@@ -1392,15 +1429,12 @@ fn clear_stale_service_ipc_state(service_ipc_path: &Path) -> ResultType<()> {
             }
             let pid = std::fs::read_to_string(&pid_path)?
                 .trim()
-                .parse::<i32>()
+                .parse::<u32>()
                 .map_err(|err| anyhow!("[root-update] invalid residual service pid: {}", err))?;
-            if pid <= 0 {
+            if pid == 0 {
                 bail!("[root-update] residual service pid is not positive");
             }
-            let status = unsafe { hbb_common::libc::kill(pid, 0) };
-            if status == 0
-                || std::io::Error::last_os_error().raw_os_error() == Some(hbb_common::libc::EPERM)
-            {
+            if root_managed_process_running_for_pid(app_bundle, pid)? {
                 bail!("[root-update] residual service IPC belongs to a live process");
             }
         }
@@ -1454,7 +1488,7 @@ fn ensure_standalone_update_state_clean(
     let service_ipc_path = Path::new("/tmp")
         .join(format!("{}-service", runtime_app_name))
         .join("ipc_service");
-    clear_stale_service_ipc_state(&service_ipc_path)?;
+    clear_stale_service_ipc_state(app_bundle, &service_ipc_path)?;
     Ok(())
 }
 
@@ -1493,6 +1527,34 @@ mod update_topology_tests {
         );
         assert!(mac_install_topology_from_presence(true, false).is_err());
         assert!(mac_install_topology_from_presence(false, true).is_err());
+    }
+
+    #[test]
+    fn unrelated_live_pid_is_not_a_managed_service_process() {
+        let app_bundle = Path::new("/Applications/RustDesk Yan.app");
+        let executable = Path::new("/usr/bin/unrelated");
+        let args = vec![String::from("unrelated")];
+
+        assert!(!root_managed_process_identity_matches(
+            Some(0),
+            executable,
+            &args,
+            app_bundle,
+        ));
+    }
+
+    #[test]
+    fn root_service_inside_the_current_bundle_is_managed() {
+        let app_bundle = Path::new("/Applications/RustDesk Yan.app");
+        let executable = app_bundle.join("Contents/MacOS/service");
+        let args = vec![String::from("service")];
+
+        assert!(root_managed_process_identity_matches(
+            Some(0),
+            &executable,
+            &args,
+            app_bundle,
+        ));
     }
 }
 

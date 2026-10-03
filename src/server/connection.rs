@@ -335,6 +335,27 @@ impl ConnAuditTwoFactor {
     }
 }
 
+fn permanent_password_sources_match<Local, Preset>(
+    local_storage: &str,
+    local_salt: &str,
+    preset_storage: &str,
+    preset_salt: &str,
+    validate_local: Local,
+    validate_preset: Preset,
+) -> bool
+where
+    Local: FnOnce(&str) -> bool,
+    Preset: FnOnce(&str, &str) -> bool,
+{
+    if local_permanent_password_storage_is_usable_for_auth(local_storage, local_salt)
+        && validate_local(local_storage)
+    {
+        return true;
+    }
+    preset_permanent_password_storage_is_usable_for_auth(preset_storage, preset_salt)
+        && validate_preset(preset_storage, preset_salt)
+}
+
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 #[derive(Clone, Debug)]
 enum TerminalUserToken {
@@ -2575,23 +2596,18 @@ impl Connection {
             // cannot fall back to being accepted as legacy plaintext.
             let (local_storage, local_salt) =
                 Config::get_local_permanent_password_storage_and_salt();
-            if !local_storage.is_empty() {
-                if local_permanent_password_storage_is_usable_for_auth(&local_storage, &local_salt)
-                    && self.validate_password_storage(&local_storage)
-                {
-                    self.set_conn_audit_primary_auth(ConnAuditPrimaryAuth::PermanentPassword);
-                    print_fallback();
-                    return true;
-                }
-            } else {
-                let (hard, salt) = Config::get_preset_password_storage_and_salt();
-                if preset_permanent_password_storage_is_usable_for_auth(&hard, &salt)
-                    && self.validate_preset_password_storage(&hard, &salt)
-                {
-                    self.set_conn_audit_primary_auth(ConnAuditPrimaryAuth::PermanentPassword);
-                    print_fallback();
-                    return true;
-                }
+            let (preset_storage, preset_salt) = Config::get_preset_password_storage_and_salt();
+            if permanent_password_sources_match(
+                &local_storage,
+                &local_salt,
+                &preset_storage,
+                &preset_salt,
+                |storage| self.validate_password_storage(storage),
+                |storage, salt| self.validate_preset_password_storage(storage, salt),
+            ) {
+                self.set_conn_audit_primary_auth(ConnAuditPrimaryAuth::PermanentPassword);
+                print_fallback();
+                return true;
             }
         }
         false
@@ -8202,6 +8218,33 @@ mod test {
             Ok(BoolOption::NotSet)
         );
     }
+
+    #[test]
+    fn preset_password_is_checked_after_a_local_password_mismatch() {
+        let local_checks = std::cell::Cell::new(0);
+        let preset_checks = std::cell::Cell::new(0);
+
+        let matched = permanent_password_sources_match(
+            "stored-local-password",
+            "",
+            "asd123asd",
+            "",
+            |storage| {
+                local_checks.set(local_checks.get() + 1);
+                assert_eq!(storage, "stored-local-password");
+                false
+            },
+            |storage, salt| {
+                preset_checks.set(preset_checks.get() + 1);
+                storage == "asd123asd" && salt.is_empty()
+            },
+        );
+
+        assert!(matched);
+        assert_eq!(local_checks.get(), 1);
+        assert_eq!(preset_checks.get(), 1);
+    }
+
     #[test]
     fn only_a_newer_remote_control_of_the_same_session_keeps_the_screen_unlocked() {
         let replaced_by = super::raii::AuthedConnID::is_newer_session_remote;

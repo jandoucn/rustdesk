@@ -93,6 +93,24 @@ class MacosReleaseAppPathTest(unittest.TestCase):
         end = updater.index("\n}\n", start)
         self.assertIn("consume_mac_update_result()", updater[start:end])
 
+    def test_stale_service_pid_is_bound_to_the_managed_process_identity(self) -> None:
+        source = (REPO_ROOT / "src/platform/macos.rs").read_text(encoding="utf-8")
+        cleanup = source[
+            source.index("fn clear_stale_service_ipc_state") :
+            source.index("fn ensure_standalone_update_state_clean")
+        ]
+        standalone = source[
+            source.index("fn ensure_standalone_update_state_clean") :
+            source.index("fn backup_update_plist")
+        ]
+
+        self.assertIn("root_managed_process_running_for_pid(app_bundle, pid", cleanup)
+        self.assertNotIn("libc::kill(pid, 0)", cleanup)
+        self.assertIn(
+            "clear_stale_service_ipc_state(app_bundle, &service_ipc_path)",
+            standalone,
+        )
+
     def test_root_update_shell_template_has_valid_syntax(self) -> None:
         source = (REPO_ROOT / "src/platform/macos.rs").read_text(encoding="utf-8")
         match = re.search(
